@@ -1599,3 +1599,17 @@ def test_clicking_a_row_clears_a_finished_marker_but_not_a_needs_you_one():
     finally:
         p.banners.clear()
         p.expanded.clear()
+
+
+def test_a_panel_started_again_comes_back_as_you_left_it():
+    """The hook restarts the panel, so how you left it has to survive that.
+    Collapsed is the everyday way to get it out of the way - it must not come
+    back at full size every time a session fires an event."""
+    badge = in_subprocess('{"collapsed": true}', "1")
+    ok(badge.get("ok"), badge)
+    full = in_subprocess('{"collapsed": false}', "1")
+    ok(full.get("ok"), full)
+    ok(badge["h"] < full["h"],
+       "a panel saved collapsed must start as the badge: %r vs %r"
+       % (badge["h"], full["h"]))
+    ok(badge["h"] < 60, "and the badge is small: %r" % badge["h"])

@@ -13,6 +13,9 @@ COPY server/static ./static
 # Installed into the host's ~/.claude by bootstrap.py, and used in-container to
 # read transcripts when the host has no Python.
 COPY hooks ./hookpayload
+# Staged onto the host too when the desktop panel is wanted: a container cannot
+# draw a window, so the panel has to run there.
+COPY panel ./panelpayload
 COPY scripts/install_hooks.py ./install_hooks.py
 
 RUN chmod +x /app/entrypoint.sh

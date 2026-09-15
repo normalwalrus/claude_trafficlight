@@ -5,3 +5,8 @@ venv/
 .pytest_cache/
 .DS_Store
 Thumbs.db
+
+# Runtime stamps, written beside the payload wherever it is staged - and beside
+# the source too if you run the launcher straight out of the repo.
+hooks/panel-quit.json
+hooks/panel-started.json

@@ -19,7 +19,14 @@ import sys
 HOST_CLAUDE = os.environ.get("HOST_CLAUDE_DIR", "/host-claude")
 _RAW_HOST_HOME = os.environ.get("HOST_HOME", "")
 ENABLED = os.environ.get("TRAFFICLIGHT_INSTALL_HOOKS", "1") not in ("0", "false", "no")
+# Nothing in here can draw a window, so the always-on-top panel has to run on
+# the host. The hooks are the only thing this project runs there, so they are
+# what starts it - all the container does is put the panel where they can find
+# it. Set TRAFFICLIGHT_DESKTOP_PANEL=0 to keep the browser panel only.
+DESKTOP_PANEL = os.environ.get("TRAFFICLIGHT_DESKTOP_PANEL", "1") not in (
+    "0", "false", "no")
 PAYLOAD_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hookpayload")
+PANEL_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "panelpayload")
 
 sys.path.insert(0, PAYLOAD_SOURCE)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -133,6 +140,7 @@ def main():
         host_dir=host_payload,
         windows=windows,
     )
+    staged_panel = install_hooks.stage_panel(PANEL_SOURCE, dest, DESKTOP_PANEL)
 
     # The launcher caches the interpreter it resolved on its first run, and we
     # can see that file through the mount. Once it exists we can invoke Python
@@ -159,6 +167,11 @@ def main():
     if rc == 0:
         print("[bootstrap] host: " + ("windows" if windows else "posix")
               + "  payload: " + host_payload)
+        if staged_panel:
+            print("[bootstrap] desktop panel staged - it will start with your "
+                  "next Claude session (needs Python with tkinter on the host)")
+        else:
+            print("[bootstrap] desktop panel off (TRAFFICLIGHT_DESKTOP_PANEL=0)")
     return rc
 
 

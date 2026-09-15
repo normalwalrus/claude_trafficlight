@@ -329,6 +329,16 @@ def main() -> int:
     except Exception:
         pass
 
+    # The same reasoning for the desktop panel: a container cannot draw a
+    # window, so the hook is the only thing that can put one on your screen.
+    # Does nothing unless the container staged it.
+    try:
+        import desktop_panel
+
+        desktop_panel.ensure_running()
+    except Exception:
+        pass
+
     hwnd, owner_pid = cached_terminal(session_id, event)
     usage = read_usage(session_id, payload, event)
     body = {

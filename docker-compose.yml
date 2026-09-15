@@ -20,6 +20,11 @@ services:
       STALE_SECONDS: "900"
       # Set to 0 to leave ~/.claude/settings.json alone.
       TRAFFICLIGHT_INSTALL_HOOKS: "1"
+      # The always-on-top desktop panel. A container cannot draw a window, so
+      # the panel is staged onto the host and started by the hooks - it appears
+      # with your next Claude session. Needs Python with tkinter on the host;
+      # without it nothing happens. Set to 0 for the browser panel only.
+      TRAFFICLIGHT_DESKTOP_PANEL: "1"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8787/healthz',timeout=2)"]

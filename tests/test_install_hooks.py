@@ -19,6 +19,8 @@ from harness import eq, ok
 
 import install_hooks
 
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 SCRIPT = install_hooks.__file__
 PY = sys.executable
 if PY.lower().endswith("pythonw.exe"):
@@ -306,3 +308,44 @@ def test_zz_the_real_user_settings_file_was_never_touched():
     before = _real.get("digest", real_settings_digest())
     eq(real_settings_digest(), before,
        "~/.claude/settings.json CHANGED while the tests ran")
+
+
+# --- staging the desktop panel ----------------------------------------------
+
+
+def test_staging_the_panel_copies_it_and_stamps_the_start():
+    """A container cannot draw a window, so the panel is copied out to the host
+    where the hooks can start it."""
+    import tempfile
+    source = os.path.join(REPO, "panel")
+    dest = tempfile.mkdtemp(prefix="clt-stage-panel-")
+    folder = install_hooks.stage_panel(source, dest, True)
+    ok(folder, "a staged panel reports where it went")
+    for name in install_hooks.PANEL_FILES:
+        ok(os.path.exists(os.path.join(folder, name)), "missing " + name)
+    stamp = os.path.join(dest, "panel-started.json")
+    ok(os.path.exists(stamp), "every startup says the panel may run again")
+    with open(stamp, encoding="utf-8") as fh:
+        ok(json.load(fh)["at"] > 0)
+
+
+def test_turning_the_panel_off_takes_the_files_away():
+    """Absence is what tells the hook not to start one, so this has to remove
+    them rather than just stop writing them."""
+    import tempfile
+    source = os.path.join(REPO, "panel")
+    dest = tempfile.mkdtemp(prefix="clt-stage-panel-")
+    folder = install_hooks.stage_panel(source, dest, True)
+    ok(os.path.exists(folder))
+    eq(install_hooks.stage_panel(source, dest, False), "")
+    ok(not os.path.exists(folder), "the staged panel must be gone")
+    eq(install_hooks.stage_panel(source, dest, False), "", "and removing it twice is fine")
+
+
+def test_the_staged_panel_is_the_whole_panel():
+    """Whatever the panel imports has to travel with it: the staged copy runs
+    with the repo deleted."""
+    source = os.path.join(REPO, "panel")
+    on_disk = {n for n in os.listdir(source) if n.endswith(".py")}
+    eq(on_disk - set(install_hooks.PANEL_FILES), set(),
+       "a panel module that is not staged would break the copied panel")

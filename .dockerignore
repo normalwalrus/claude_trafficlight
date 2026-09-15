@@ -6,7 +6,8 @@ __pycache__
 .venv
 venv
 tests
-panel
+# panel/ is NOT ignored: the image carries it so the container can stage the
+# desktop panel onto the host, where it is the only place a window can be drawn.
 run.py
 install.py
 README.md

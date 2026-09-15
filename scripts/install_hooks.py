@@ -52,7 +52,14 @@ SETTINGS = os.path.join(CLAUDE_HOME, "settings.json")
 # container installs the same payload without knowing where the host repo is.
 PAYLOAD_DIRNAME = "claude-trafficlight"
 PAYLOAD_FILES = ("claude_light_hook.py", "transcript.py",
-                 "session_watch.py")
+                 "session_watch.py", "desktop_panel.py")
+
+# The desktop panel, staged into a subdirectory of the payload when it is
+# wanted. Nothing in a container can draw a window, so this is how the panel
+# reaches the host: copied beside the hooks, started by them, and deletable
+# with the rest of the payload.
+PANEL_DIRNAME = "panel"
+PANEL_FILES = ("panel.py", "chime.py", "themes.py", "desktop.py", "winutil.py")
 HOOK_NAME = "claude_light_hook.py"
 
 PAYLOAD_DIR = os.path.join(CLAUDE_HOME, PAYLOAD_DIRNAME)
@@ -145,6 +152,33 @@ def stage_payload(source_dir=None, dest_dir=None, host_dir=None, windows=None):
 
     sep = "\\" if windows else "/"
     return host_dir.rstrip("/\\") + sep + name
+
+
+def stage_panel(source_dir, dest_dir, wanted):
+    """Copy the desktop panel beside the hooks, or take it away again.
+
+    Absence is what tells the hook not to start a panel, so turning the option
+    off has to remove the files rather than just stop writing them.
+    """
+    folder = os.path.join(dest_dir, PANEL_DIRNAME)
+    if not wanted:
+        shutil.rmtree(folder, ignore_errors=True)
+        return ""
+    os.makedirs(folder, exist_ok=True)
+    for name in PANEL_FILES:
+        src = os.path.join(source_dir, name)
+        if os.path.exists(src):
+            shutil.copyfile(src, os.path.join(folder, name))
+    # Every `docker compose up` says "start the panel again", which is what
+    # ends a deliberate quit - a decision the user has to be able to reverse
+    # with the same command they set it up with.
+    try:
+        with open(os.path.join(dest_dir, "panel-started.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"at": time.time()}, fh)
+    except OSError:
+        pass
+    return folder
 
 
 def python_exe():

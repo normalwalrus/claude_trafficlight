@@ -37,7 +37,9 @@ docker compose build
 docker compose up -d
 ```
 
-Then open **http://localhost:8787**.
+Then open **http://localhost:8787**. If the host has Python with tkinter, the
+always-on-top desktop panel starts itself with your next Claude session too —
+see [The desktop panel](#the-desktop-panel).
 
 **Restart any Claude Code sessions you already have open.** Sessions that were
 running before you installed it *do* appear straight away — the panel reads
@@ -88,15 +90,37 @@ python install.py --remove      # also unregister the hooks and delete the paylo
 `~/.claude/claude-trafficlight/` folder and remove the `hooks` entries that
 point at it from `~/.claude/settings.json`.
 
-### Optional: the native panel
+### The desktop panel
 
-The browser panel floats fine via **pop out**, but it cannot raise your editor
-when you click a row — no container can reach your windows. If you have
-Python 3.8+ on the host, add:
+<img src="docs/panel-badge.png" width="110" align="right" alt="The minimised badge">
+
+The one thing the browser panel cannot do is raise your editor when you click a
+row — no container can reach your windows. The desktop panel can, and it is
+what `docker compose up -d` gives you: the container stages it into
+`~/.claude/claude-trafficlight/` beside the hooks, and the hooks start it, because
+**a container cannot draw a window and the hooks are the only thing this
+project runs on your machine.** It appears with your next Claude session,
+which is when there is something to show.
+
+It needs Python with **tkinter** on the host — the standard python.org
+installer includes it. Without it nothing happens and the browser panel carries
+on as before. To keep the browser panel only, set `TRAFFICLIGHT_DESKTOP_PANEL:
+"0"` in `docker-compose.yml`.
+
+Only one ever runs, whoever started it: the panel heartbeats a lock file, so
+`python run.py` and the hooks cannot end up with a panel each.
+
+**Getting it out of the way.** The `×` minimises it to the badge, and that is
+remembered — a panel the hooks restart comes back exactly as you left it,
+collapsed if that is how it was. **Quit** is the real stop, and it stays
+stopped: bring it back with `docker compose restart` (`up -d` does nothing when
+the container is already running, which is why the menu item says so).
+
+By hand, if you prefer:
 
 ```bash
-python run.py              # always-on-top widget, click-to-focus
-python install.py          # the above, plus a login item
+python run.py              # start the server, then the panel
+python install.py          # the above, plus a login item, so it is up from login
 python install.py --check  # what is installed, and is it healthy
 python install.py --remove # undo everything
 ```
@@ -110,7 +134,7 @@ Both panels show the same data and can run at the same time.
 | Docker only             | Browser panel, **full token data**, always-on-top pop out\*\* |
 | Docker + `curl`\*       | Same — the server reads the transcripts itself      |
 | Docker + Python         | All of the above, plus a closed session leaving the panel within seconds\*\*\* |
-| Docker + Python + tkinter | Desktop panel as well: click-to-focus, chimes, minimise badge |
+| Docker + Python + tkinter | **The desktop panel, started for you**: click-to-focus, chimes, minimise badge |
 
 \* `curl` ships with Windows 10+, macOS and most Linux distributions. The
 generated hook launcher tries `py`, `python`, `python3`, then `curl`, and
@@ -151,6 +175,9 @@ Host                                Docker
 * **Session watcher** — `hooks/session_watch.py`, started by the hook and
   gone when the sessions are. The one thing the container cannot do for
   itself: check that the process behind a registry entry is still running.
+* **Desktop panel launcher** — `hooks/desktop_panel.py`, the same idea for the
+  other thing a container cannot do: put a window on your screen. One panel at
+  a time, and it respects a deliberate quit.
 * **Token reader** — `hooks/transcript.py` tails the session's transcript
   JSONL, keeping a byte offset per session so each hook parses only what was
   appended (~10 ms, not a full re-read of a multi-megabyte file). It also picks
@@ -459,7 +486,7 @@ python tests/run_all.py            # everything
 python tests/run_all.py panel hook # just those modules
 ```
 
-299 tests, zero dependencies. The server tests skip unless `fastapi` is
+316 tests, zero dependencies. The server tests skip unless `fastapi` is
 importable, so the quickest way to run the whole suite is inside the image that
 already has it:
 

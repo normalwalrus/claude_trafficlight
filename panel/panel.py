@@ -19,6 +19,19 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chime  # noqa: E402
+try:
+    # Two layouts: staged, where the panel sits in <payload>/panel/ and this
+    # lives one level up, and the repo, where it is in hooks/. Both matter -
+    # a panel started from the repo has to claim the same lock, or the hook
+    # would start a second one beside it.
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _parent = os.path.dirname(_here)
+    for _candidate in (_parent, os.path.join(_parent, "hooks")):
+        if _candidate not in sys.path:
+            sys.path.append(_candidate)
+    import desktop_panel
+except Exception:
+    desktop_panel = None
 import themes  # noqa: E402
 import desktop  # noqa: E402
 from desktop import foreground_window  # noqa: E402
@@ -101,6 +114,9 @@ AWAY_AFTER = 300
 # a line of unusually wide ones. It matches the identity line below it.
 DETAIL_CHARS = 44
 PROMPT_LINES = 2
+
+# How often the panel says it is alive, for the hook that may have started it.
+HEARTBEAT_SECS = 5
 
 # Settings panel, at 100% scale.
 SETTINGS_H = 134
@@ -468,6 +484,7 @@ class Panel:
         self._window_cache = {}  # sid -> hwnd, so the foreground check is cheap
         self._chime_token = 0   # so a superseded timer cannot fire early
         self.collapsed = bool(self.cfg.get("collapsed", False))
+        self._last_heartbeat = 0.0
         self._frame_job = None
         self.settings_open = False
         self.slider_hitboxes = []
@@ -532,7 +549,15 @@ class Panel:
         self.menu.add_command(label="Minimise to a badge", command=self.collapse)
         self.menu.add_command(label="Reset position", command=self.reset_position)
         self.menu.add_separator()
-        self.menu.add_command(label="Quit", command=self.quit)
+        # Say what Quit costs at the moment you are choosing it. A panel the
+        # hook starts does not come back on its own - that is the point of the
+        # stamp - and `docker compose up -d` is a no-op while the container is
+        # already running, so name the command that actually works.
+        self.menu.add_command(
+            label="Quit (back on: docker compose restart)" if self.managed()
+            else "Quit",
+            command=self.quit,
+        )
 
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
@@ -854,10 +879,25 @@ class Panel:
             self.retire_opened_banners()
             self.draw()
             self.start_frames()
+            self.heartbeat()
         except Exception:
             pass
         finally:
             self.root.after(500, self.tick)
+
+    def heartbeat(self):
+        """Say that a panel is running, so the hook does not start a second.
+
+        Every few seconds rather than every tick: it is a file write, and the
+        hook only cares whether it is recent.
+        """
+        if desktop_panel is None:
+            return
+        now = time.time()
+        if now - self._last_heartbeat < HEARTBEAT_SECS:
+            return
+        self._last_heartbeat = now
+        desktop_panel.touch_lock()
 
     # --- drawing ------------------------------------------------------------
 
@@ -1731,7 +1771,31 @@ class Panel:
             int(chime.duration("orange", self.sound) * 1000) + 300,
             lambda: chime.play("green", self.volume, self.sound))
 
+    def managed(self):
+        """True when this panel was staged onto the host by the container and
+        is kept running by the hooks, rather than started by hand."""
+        if desktop_panel is None:
+            return False
+        try:
+            return os.path.exists(desktop_panel.PANEL)
+        except Exception:
+            return False
+
     def quit(self):
+        """Quit means quit.
+
+        The hook starts the panel when the container has staged it, so without
+        this a deliberate quit would last until the next Claude event. The
+        stamp stands until the next `docker compose up` writes a later one.
+        Collapsing to the badge is the everyday gesture - that is remembered by
+        itself, and an auto-started panel comes back exactly as you left it.
+        """
+        if desktop_panel is not None:
+            try:
+                desktop_panel.write_quit_stamp()
+                desktop_panel.clear_lock()
+            except Exception:
+                pass
         self.feed.stopped.set()
         self.root.destroy()
 
