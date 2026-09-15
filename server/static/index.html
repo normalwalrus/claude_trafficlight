@@ -357,6 +357,10 @@
   const countEl = document.getElementById("count");
   const connEl  = document.getElementById("conn");
   const soundEl = document.getElementById("sound");
+  // Looked up once and kept: pop out moves the panel into another document,
+  // where document.getElementById returns null and every later lookup fails.
+  const panelEl = document.querySelector(".panel");
+  const themeSel = document.getElementById("setTheme");
 
   let sessions = [];
   let clockOffset = 0;          // server clock minus ours
@@ -455,7 +459,7 @@
 
   function fillThemePicker() {
     if (!THEMES) return;
-    const sel = document.getElementById("setTheme");
+    const sel = themeSel;
     sel.innerHTML = "";
     for (const name of THEMES.order) {
       const opt = document.createElement("option");
@@ -741,8 +745,61 @@
     setTimeout(() => li.classList.remove("pulsing"), 700);
   }
 
+  // --- shared settings
+  //
+  // Sound, volume and theme live on the server, because both panels chime at
+  // the same events: a choice kept in one of them means picking a sound here
+  // and still hearing the desktop panel's old one. localStorage stays as the
+  // local cache, so the panel looks right before the first snapshot lands and
+  // while the server is away.
+  let settingsRevision = 0;
+  let seededSettings = false;
+
+  function pushSettings(patch) {
+    fetch("settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }).catch(() => { /* offline: the local value still applies here */ });
+  }
+
+  function applySettings(s) {
+    if (!s || typeof s !== "object") return;
+    const rev = Number(s.revision) || 0;
+    if (rev === 0) {
+      // Nothing has ever been chosen. Offer what this browser remembers, so
+      // moving to shared settings keeps the choice you already made rather
+      // than resetting you to the defaults.
+      if (!seededSettings) {
+        seededSettings = true;
+        pushSettings({ sound, volume, theme });
+      }
+      return;
+    }
+    if (rev === settingsRevision) return;
+    settingsRevision = rev;
+    if (typeof s.sound === "string" && s.sound !== sound) {
+      sound = s.sound;
+      remember("clt.sound", sound);
+      if (SOUNDS && SOUNDS.sounds[sound]) soundSel.value = sound;
+    }
+    if (typeof s.volume === "number" && s.volume !== volume) {
+      volume = Math.max(0, Math.min(100, Math.round(s.volume)));
+      remember("clt.volume", String(volume));
+      volEl.value = String(volume);
+      outVol.value = volume <= 0 ? "muted" : volume + "%";
+    }
+    if (typeof s.theme === "string" && s.theme !== theme) {
+      theme = s.theme;
+      remember("clt.theme", theme);
+      if (THEMES && THEMES.themes[theme]) themeSel.value = theme;
+      applyTheme(theme);
+    }
+  }
+
   function onSnapshot(data) {
     clockOffset = (Number(data.now) || Date.now() / 1000) - Date.now() / 1000;
+    applySettings(data.settings);
     sessions = Array.isArray(data.sessions) ? data.sessions : [];
 
     for (const s of sessions) {
@@ -838,7 +895,7 @@
   }
 
   function applyScale(percent) {
-    document.querySelector(".panel").style.setProperty("--scale", percent / 100);
+    panelEl.style.setProperty("--scale", percent / 100);
     outScale.value = percent + "%";
   }
 
@@ -868,17 +925,20 @@
     outVol.value = volume <= 0 ? "muted" : volume + "%";
     remember("clt.volume", String(volume));
   });
-  // One preview when the drag ends, not one per pixel of travel.
-  volEl.addEventListener("change", () => chime("green"));
+  // One preview when the drag ends, not one per pixel of travel - and one
+  // push to the server then too, rather than one per pixel.
+  volEl.addEventListener("change", () => { pushSettings({ volume }); chime("green"); });
   soundSel.addEventListener("change", () => {
     sound = soundSel.value;
     remember("clt.sound", sound);
+    pushSettings({ sound });
     chime("green");
   });
   testEl.addEventListener("click", () => chime("green"));
-  document.getElementById("setTheme").addEventListener("change", ev => {
+  themeSel.addEventListener("change", ev => {
     theme = ev.target.value;
     remember("clt.theme", theme);
+    pushSettings({ theme });
     applyTheme(theme);
   });
 
@@ -890,7 +950,6 @@
   outVol.value = volume <= 0 ? "muted" : volume + "%";
 
   // --- pop out
-  const panelEl = document.querySelector(".panel");
   const popoutEl = document.getElementById("popout");
 
   function stylesFor(doc) {

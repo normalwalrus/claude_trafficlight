@@ -279,11 +279,77 @@ class Panel:
         except Exception:
             pass
 
+    # --- shared settings ----------------------------------------------------
+    #
+    # The alert sound, the volume and the theme live on the server, because
+    # both panels chime at the same events: a choice kept in this panel alone
+    # means picking a sound in the browser and still hearing this one's. The
+    # local panel.json stays as the cache, so the panel looks right at startup
+    # and while the server is away.
+
+    def push_settings(self, patch):
+        """Tell the server what was just chosen here. Never blocks the UI."""
+        def send():
+            try:
+                req = urllib.request.Request(
+                    SERVER + "/settings",
+                    data=json.dumps(patch).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="PUT",
+                )
+                urllib.request.urlopen(req, timeout=2).read()
+            except Exception:
+                pass          # offline: the local value still applies here
+
+        threading.Thread(target=send, daemon=True).start()
+
+    def apply_settings(self, data):
+        """Take on a setting chosen in the other panel."""
+        if not isinstance(data, dict):
+            return
+        revision = as_int(data.get("revision"))
+        if revision <= 0:
+            # Nothing has ever been chosen. Offer what this panel remembers,
+            # so moving to shared settings keeps the choice already made.
+            if not self._seeded_settings:
+                self._seeded_settings = True
+                self.push_settings({"sound": self.sound, "volume": self.volume,
+                                    "theme": self.theme})
+            return
+        if revision == self.settings_revision:
+            return
+        self.settings_revision = revision
+        redraw = False
+
+        sound = data.get("sound")
+        if isinstance(sound, str) and sound in chime.ORDER and sound != self.sound:
+            self.sound = self.cfg["sound"] = sound
+            redraw = True
+
+        volume = data.get("volume")
+        if isinstance(volume, (int, float)) and not isinstance(volume, bool):
+            volume = chime.as_volume(volume)
+            if volume != self.volume:
+                self.volume = self.cfg["volume"] = volume
+                redraw = True
+
+        theme = data.get("theme")
+        if isinstance(theme, str) and theme in themes.ORDER and theme != self.theme:
+            self.apply_theme(theme)
+            self.cfg["theme"] = self.theme
+            self.restyle()
+            redraw = True
+
+        if redraw:
+            save_config(self.cfg)
+            self.draw()
+
     def cycle_theme(self, step):
         idx = (themes.ORDER.index(self.theme) + step) % len(themes.ORDER)
         self.apply_theme(themes.ORDER[idx])
         self.cfg["theme"] = self.theme
         save_config(self.cfg)
+        self.push_settings({"theme": self.theme})
         self.restyle()
         self.draw()
 
@@ -360,6 +426,10 @@ class Panel:
         self.sound = str(self.cfg.get("sound", chime.DEFAULT))
         if self.sound not in chime.ORDER:
             self.sound = chime.DEFAULT
+        # The server holds the sound, volume and theme both panels use; these
+        # track what we have taken on from it. 0 means it has told us nothing.
+        self.settings_revision = 0
+        self._seeded_settings = False
         self.rescale()
 
         self.root = tk.Tk()
@@ -531,6 +601,7 @@ class Panel:
         if not isinstance(data, dict):
             return
         self.clock_offset = as_float(data.get("now"), time.time()) - time.time()
+        self.apply_settings(data.get("settings"))
         sessions = data.get("sessions")
         if not isinstance(sessions, list):
             sessions = []
@@ -1018,6 +1089,7 @@ class Panel:
         self.sound = chime.ORDER[idx]
         self.cfg["sound"] = self.sound
         save_config(self.cfg)
+        self.push_settings({"sound": self.sound})
         chime.play("green", self.volume, self.sound)
         self.draw()
 
@@ -1345,8 +1417,11 @@ class Panel:
         if self._drag_slider:
             key = self._drag_slider[0]
             self._drag_slider = None
-            if key == "volume" and self.volume > 0:
-                chime.play("green", self.volume, self.sound)
+            if key == "volume":
+                # One push when the drag ends, not one per pixel of travel.
+                self.push_settings({"volume": self.volume})
+                if self.volume > 0:
+                    chime.play("green", self.volume, self.sound)
             return
         if self._dragging:
             self.cfg["pos"] = [self.root.winfo_x(), self.root.winfo_y()]

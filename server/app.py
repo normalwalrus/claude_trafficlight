@@ -83,6 +83,18 @@ ENDED_TOMBSTONE = 120
 # exactly the lie the panel must not tell. The first hook replaces it.
 ADOPTED_STATE = "unknown"
 
+# Which alert sound, how loud and which theme - held here rather than in each
+# panel. The two panels chime at the same events, so a setting that lives in
+# one of them means picking a sound in the browser and still hearing the
+# desktop panel's old one. The server is the one thing both already talk to.
+#
+# Deliberately not shared: window size and position (about the window, not
+# about you) and the browser's own audio-enabled toggle, which is a permission
+# the browser grants on a click rather than a preference.
+SETTINGS_KEYS = ("sound", "volume", "theme")
+SETTINGS_FILE = os.path.join(HOST_CLAUDE, "claude-trafficlight",
+                             "panel-settings.json")
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "hookpayload"))
 try:
     import transcript as _transcript
@@ -234,6 +246,119 @@ class LiveReport(BaseModel):
     interval: Optional[float] = None
 
 
+class SettingsUpdate(BaseModel):
+    """One panel's change. Anything left out keeps its current value."""
+
+    sound: Optional[str] = None
+    volume: Optional[int] = None
+    theme: Optional[str] = None
+
+
+def _allowed(name: str) -> Set[str]:
+    """The names a static definition file offers, for validating a setting.
+
+    Read rather than hard-coded: sounds.json and themes.json are generated from
+    panel/chime.py and panel/themes.py at build time, so this cannot drift from
+    what the panels can actually play or paint.
+    """
+    try:
+        with open(os.path.join(STATIC_DIR, name), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return set()
+    order = data.get("order")
+    return {str(x) for x in order} if isinstance(order, list) else set()
+
+
+class Settings:
+    """The panel preferences both panels share.
+
+    Revision 0 means nothing has ever been set. A panel that sees it sends its
+    own stored values up, so switching to shared settings adopts the choice you
+    already made rather than resetting you to the defaults.
+    """
+
+    def __init__(self) -> None:
+        self.values: Dict[str, Any] = {"sound": "oven", "volume": 60,
+                                       "theme": "midnight"}
+        self.revision = 0
+        self.load()
+
+    def payload(self) -> Dict[str, Any]:
+        out = dict(self.values)
+        out["revision"] = self.revision
+        return out
+
+    def load(self) -> None:
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
+                stored = json.load(fh)
+        except Exception:
+            return
+        if not isinstance(stored, dict):
+            return
+        clean = self.clean(stored)
+        self.values.update(clean)
+        try:
+            self.revision = max(0, int(stored.get("revision", 1)))
+        except (TypeError, ValueError):
+            self.revision = 1
+
+    def save(self) -> None:
+        """Persist beside the hook payload, which is on the host's mount, so
+        the settings survive rebuilding or deleting the container."""
+        folder = os.path.dirname(SETTINGS_FILE)
+        try:
+            os.makedirs(folder, exist_ok=True)
+            tmp = SETTINGS_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self.payload(), fh, indent=2)
+            os.replace(tmp, SETTINGS_FILE)
+        except OSError:
+            return          # no mount, or read-only: memory-only is fine
+        # On Linux the container is root, so anything it writes into the user's
+        # home would otherwise be theirs to look at but not to delete.
+        if hasattr(os, "chown"):
+            try:
+                st = os.stat(HOST_CLAUDE)
+                os.chown(SETTINGS_FILE, st.st_uid, st.st_gid)
+            except OSError:
+                pass
+
+    @staticmethod
+    def clean(update: Dict[str, Any]) -> Dict[str, Any]:
+        """Only the settings we recognise, only with values a panel can use."""
+        out: Dict[str, Any] = {}
+        sounds = _allowed("sounds.json")
+        themes = _allowed("themes.json")
+        sound = update.get("sound")
+        if isinstance(sound, str) and (not sounds or sound in sounds):
+            out["sound"] = sound
+        theme = update.get("theme")
+        if isinstance(theme, str) and (not themes or theme in themes):
+            out["theme"] = theme
+        volume = update.get("volume")
+        if isinstance(volume, bool):
+            volume = None
+        if isinstance(volume, (int, float)):
+            out["volume"] = max(0, min(100, int(volume)))
+        return out
+
+    def apply(self, update: Dict[str, Any]) -> bool:
+        clean = self.clean(update)
+        if not clean:
+            return False
+        changed = any(self.values.get(k) != v for k, v in clean.items())
+        self.values.update(clean)
+        # A first write counts even when it matches the defaults: it is what
+        # takes the settings from "never set" to "this is the choice".
+        if not changed and self.revision:
+            return False
+        self.revision += 1
+        self.save()
+        return True
+
+
 class Store:
     def __init__(self) -> None:
         self.sessions: Dict[str, Dict[str, Any]] = {}
@@ -270,6 +395,10 @@ class Store:
             "now": now,
             "revision": self.revision,
             "sessions": rows,
+            # Carried on every frame rather than sent as an event of its own:
+            # a snapshot is already the complete state, so a panel that joins
+            # late or misses one still ends up with the current settings.
+            "settings": settings.payload(),
         }
 
     def publish(self) -> None:
@@ -456,6 +585,7 @@ class Store:
             self.publish()
 
 
+settings = Settings()
 store = Store()
 
 
@@ -603,6 +733,24 @@ async def post_hook(event: str, request: Request) -> Dict[str, Any]:
         usage=usage,
     ))
     return {"ok": True, "state": store.sessions.get(session_id, {}).get("state")}
+
+
+@app.get("/settings")
+async def get_settings() -> Dict[str, Any]:
+    return settings.payload()
+
+
+@app.put("/settings")
+async def put_settings(update: SettingsUpdate) -> Dict[str, Any]:
+    """A panel changing the alert sound, the volume or the theme.
+
+    Both panels chime at the same events, so this is the one place the choice
+    can live and be heard: whoever changes it, the other follows on its next
+    snapshot, and it survives a container rebuild.
+    """
+    if settings.apply(update.model_dump(exclude_none=True)):
+        store.publish()
+    return settings.payload()
 
 
 @app.get("/sessions")

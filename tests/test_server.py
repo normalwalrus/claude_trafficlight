@@ -6,6 +6,7 @@ instance on an ephemeral port - never the live server on 8787.
 """
 
 import json
+import os
 import socket
 import threading
 import time
@@ -820,3 +821,139 @@ def test_the_live_endpoint_reports_what_it_is_watching():
         eq(app.store.host_live_ids(), {"a", "b"}, "the last report stands")
     finally:
         _reset(app)
+
+
+# --- settings both panels share ----------------------------------------------
+
+
+def _settings(app, tmp=None):
+    """A Settings object writing somewhere harmless."""
+    import tempfile
+    saved = app.SETTINGS_FILE
+    app.SETTINGS_FILE = tmp or os.path.join(
+        tempfile.mkdtemp(prefix="clt-settings-"), "panel-settings.json")
+    try:
+        return app.Settings(), app.SETTINGS_FILE, saved
+    except Exception:
+        app.SETTINGS_FILE = saved
+        raise
+
+
+def test_settings_start_unset_so_a_panel_can_offer_its_own():
+    """Revision 0 is what tells a panel to send up the choice you already made
+    rather than being reset to the defaults."""
+    app = _srv()
+    s, path, saved = _settings(app)
+    try:
+        eq(s.revision, 0, "nothing has been chosen yet")
+        eq(s.payload()["sound"], "oven")
+        ok(not os.path.exists(path), "and nothing written")
+    finally:
+        app.SETTINGS_FILE = saved
+
+
+def test_a_setting_is_only_taken_if_a_panel_could_use_it():
+    """The names are read from the generated sounds.json / themes.json, so a
+    value no panel can play or paint never reaches one."""
+    app = _srv()
+    clean = app.Settings.clean
+    eq(clean({"sound": "marimba"}), {"sound": "marimba"})
+    eq(clean({"sound": "airhorn"}), {}, "not one of the six")
+    eq(clean({"theme": "neon"}), {"theme": "neon"})
+    eq(clean({"theme": "chartreuse"}), {}, "not a theme we ship")
+    eq(clean({"volume": 40}), {"volume": 40})
+    eq(clean({"volume": 900}), {"volume": 100}, "clamped, not refused")
+    eq(clean({"volume": -3}), {"volume": 0})
+    eq(clean({"volume": "loud"}), {}, "a number, not a word")
+    eq(clean({"volume": True}), {}, "a bool is not a volume")
+    eq(clean({"scale": 2, "pos": [0, 0]}), {}, "window settings are not shared")
+
+
+def test_changing_a_setting_moves_the_revision_on():
+    app = _srv()
+    s, _path, saved = _settings(app)
+    try:
+        ok(s.apply({"sound": "glass"}), "a first choice always counts")
+        eq(s.revision, 1)
+        ok(not s.apply({"sound": "glass"}), "the same value again is not news")
+        eq(s.revision, 1, "an unchanged setting must not wake the panels")
+        ok(s.apply({"volume": 20}))
+        eq(s.revision, 2)
+        eq(s.payload()["sound"], "glass", "the other settings are left alone")
+        ok(not s.apply({"sound": "airhorn"}), "a rejected value changes nothing")
+        eq(s.revision, 2)
+    finally:
+        app.SETTINGS_FILE = saved
+
+
+def test_settings_survive_the_container():
+    """They live on the mounted host directory, not in the image, so rebuilding
+    or deleting the container does not lose them."""
+    app = _srv()
+    s, path, saved = _settings(app)
+    try:
+        s.apply({"sound": "timer", "volume": 15, "theme": "neon"})
+        ok(os.path.exists(path), "written to disk: %r" % path)
+        again = app.Settings()
+        eq(again.payload()["sound"], "timer")
+        eq(again.payload()["volume"], 15)
+        eq(again.payload()["theme"], "neon")
+        ok(again.revision > 0, "and it knows a choice has been made")
+    finally:
+        app.SETTINGS_FILE = saved
+
+
+def test_a_damaged_settings_file_falls_back_to_the_defaults():
+    app = _srv()
+    import tempfile
+    path = os.path.join(tempfile.mkdtemp(prefix="clt-settings-"), "panel.json")
+    saved = app.SETTINGS_FILE
+    app.SETTINGS_FILE = path
+    try:
+        for junk in ["", "not json", "[]", "null", '{"sound": 5}', '{"volume": {}}']:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(junk)
+            s = app.Settings()
+            eq(s.payload()["sound"], "oven", "junk: %r" % junk)
+            eq(s.payload()["volume"], 60)
+    finally:
+        app.SETTINGS_FILE = saved
+
+
+def test_every_snapshot_carries_the_settings():
+    """Sent with the state rather than as an event of its own, so a panel that
+    joins late or misses a frame still ends up with the current values."""
+    app = _srv()
+    snap = app.store.snapshot()
+    ok(isinstance(snap.get("settings"), dict), "settings missing from snapshot")
+    for key in ("sound", "volume", "theme", "revision"):
+        ok(key in snap["settings"], "snapshot settings missing %r" % key)
+
+
+def test_the_settings_endpoint_updates_and_publishes():
+    base = _live_server()
+    app = _srv()
+    before = app.store.revision
+
+    def put(body):
+        req = urllib.request.Request(
+            base + "/settings", data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"}, method="PUT")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read())
+
+    saved = dict(app.settings.values), app.settings.revision
+    try:
+        out = put({"sound": "deskbell", "volume": 33})
+        eq(out["sound"], "deskbell")
+        eq(out["volume"], 33)
+        ok(app.store.revision > before,
+           "a settings change must reach the panels that are connected")
+
+        with urllib.request.urlopen(base + "/settings", timeout=5) as r:
+            eq(json.loads(r.read())["sound"], "deskbell", "and it is served back")
+
+        out = put({"sound": "airhorn"})
+        eq(out["sound"], "deskbell", "a value no panel can play is ignored")
+    finally:
+        app.settings.values, app.settings.revision = saved

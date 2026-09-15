@@ -52,6 +52,10 @@ def panel():
     # away, so a test that dropped the connection would leave every later one
     # looking at dark lamps.
     p.connected = True
+    # Including anything a test stubbed out: the panel is shared between them.
+    p.__dict__.pop("push_settings", None)
+    p.settings_revision = 0
+    p._seeded_settings = False
     p.banners.clear()
     p.anim.clear()
     p._chime_armed.clear()
@@ -1350,3 +1354,83 @@ def test_the_stream_reader_yields_once_per_line():
     up for snapshots would leave it blocked through a quiet stream."""
     stream = [b"event: ping\n", b"data: {}\n", b"\n"]
     eq(list(P.Feed.snapshots(stream)), [None, None, None])
+
+
+# --- settings shared with the browser panel ---------------------------------
+
+
+def with_pushes(p):
+    """Record what the panel would send to the server instead of sending it."""
+    sent = []
+    p.push_settings = lambda patch: sent.append(patch)
+    p.settings_revision = 0
+    p._seeded_settings = False
+    return sent
+
+
+def test_a_setting_chosen_in_the_other_panel_is_taken_on():
+    """Both panels chime at the same events, so the sound has to be one
+    choice: picking glass in the browser must not leave this one on oven."""
+    p = panel()
+    try:
+        sent = with_pushes(p)
+        p.sound, p.volume = "oven", 60
+        p.apply_settings({"revision": 4, "sound": "glass", "volume": 22,
+                          "theme": p.theme})
+        eq(p.sound, "glass")
+        eq(p.volume, 22)
+        eq(sent, [], "taking on a setting must not send it straight back")
+    finally:
+        p.sound, p.volume = "oven", 60
+
+
+def test_the_same_revision_is_not_applied_twice():
+    p = panel()
+    try:
+        with_pushes(p)
+        p.apply_settings({"revision": 7, "sound": "timer"})
+        eq(p.sound, "timer")
+        p.sound = "oven"                      # as if chosen here in between
+        p.apply_settings({"revision": 7, "sound": "timer"})
+        eq(p.sound, "oven", "an unchanged revision must not undo a local choice")
+    finally:
+        p.sound = "oven"
+
+
+def test_settings_nobody_has_chosen_yet_are_offered_once():
+    """Revision 0 means the server has never been told. The panel offers what
+    it already had, so switching to shared settings keeps your choice."""
+    p = panel()
+    try:
+        sent = with_pushes(p)
+        p.sound, p.volume = "marimba", 15
+        p.apply_settings({"revision": 0, "sound": "oven", "volume": 60})
+        eq(sent, [{"sound": "marimba", "volume": 15, "theme": p.theme}])
+        eq(p.sound, "marimba", "and the defaults do not overwrite it")
+        p.apply_settings({"revision": 0, "sound": "oven"})
+        eq(len(sent), 1, "offered once, not on every snapshot")
+    finally:
+        p.sound, p.volume = "oven", 60
+
+
+def test_a_rubbish_settings_frame_changes_nothing():
+    p = panel()
+    try:
+        with_pushes(p)
+        p.sound, p.volume = "oven", 60
+        for junk in [None, [], "text", 5, {}, {"revision": 9, "sound": "airhorn"},
+                     {"revision": 10, "volume": "loud"},
+                     {"revision": 11, "theme": "chartreuse"},
+                     {"revision": 12, "volume": True}]:
+            p.apply_settings(junk)
+        eq(p.sound, "oven")
+        eq(p.volume, 60)
+    finally:
+        p.sound, p.volume = "oven", 60
+
+
+def test_a_snapshot_without_settings_is_harmless():
+    p = panel()
+    with_pushes(p)
+    p.on_snapshot(snapshot([session(0)]))     # no settings key at all
+    eq(len(p.sessions), 1, "the rows still arrive")

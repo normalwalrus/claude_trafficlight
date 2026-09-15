@@ -146,7 +146,8 @@ Host                                Docker
 * **Token reader** — `hooks/transcript.py` tails the session's transcript
   JSONL, keeping a byte offset per session so each hook parses only what was
   appended (~10 ms, not a full re-read of a multi-megabyte file).
-* **Server** — holds the session table in memory, pushes snapshots over SSE,
+* **Server** — holds the session table in memory and the settings both panels
+  share, pushes snapshots over SSE,
   serves the browser panel, and installs the hooks at startup. It mounts
   `~/.claude` read-write, which is also how it reads transcripts when the host
   has no Python.
@@ -301,7 +302,23 @@ menu, and in the browser panel's header):
   runs roughly with the square root of amplitude - a linear slider would
   sound equally loud over most of its travel.
 * **Sound** — pick one of the six, with a test button.
-* **Theme** — six colour schemes, applied to both panels.
+* **Theme** — six colour schemes.
+
+**Sound, volume and theme are one setting, not one per panel.** Both panels
+chime at the same events, so a choice kept in one of them meant picking a sound
+in the browser and still hearing the desktop panel's old one. The server holds
+them (`GET`/`PUT /settings`), every snapshot carries them, and whichever panel
+you change follows in the other within a second. They are stored in
+`~/.claude/claude-trafficlight/panel-settings.json`, so they survive rebuilding
+or deleting the container, and each panel keeps a local copy so it still looks
+right before the first snapshot arrives.
+
+The first panel to connect to a server that has never been told anything sends
+up the choice it already had, so nothing resets you to the defaults.
+
+Size and position stay per panel - they are about the window, not about you -
+as does the browser's own **Sound on/off** button, which is a permission the
+browser grants on a click rather than a preference.
 
 <img src="docs/web-settings.png" width="620" alt="The same settings in the browser panel">
 
@@ -370,6 +387,8 @@ python scripts/demo.py        # drive three fake sessions through every state
 curl http://127.0.0.1:8787/sessions
 curl http://127.0.0.1:8787/healthz     # "host_watcher": is anything checking
                                        # that the listed sessions are alive?
+curl http://127.0.0.1:8787/settings    # the sound, volume and theme both
+                                       # panels are using
 ```
 
 ## Tests
@@ -379,7 +398,7 @@ python tests/run_all.py            # everything
 python tests/run_all.py panel hook # just those modules
 ```
 
-264 tests, zero dependencies. The server tests skip unless `fastapi` is
+276 tests, zero dependencies. The server tests skip unless `fastapi` is
 importable;
 install `server/requirements.txt` into a venv to run them too. Nothing in the
 suite touches your real `settings.json`, port 8787, or the running panel.
