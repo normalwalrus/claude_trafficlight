@@ -7,8 +7,10 @@ A traffic light for every Claude Code session you have running.
 <img src="docs/panel.png" width="420" alt="The always-on-top panel: three traffic lights, one per session">
 
 It sits on top of your windows so you can tell at a glance which session needs
-you, dings when one finishes, and opens up to show exactly what each session is
-doing and how many tokens it has spent.
+you, dings when one finishes, and opens up to show what each session is
+working on, what you last asked it, and how many tokens it has spent. A session
+you leave waiting escalates on its own, and one that finishes while you are
+away from the desk says so when you get back.
 
 <img src="docs/web-panel.png" width="620" alt="A row expanded, showing activity, context usage and token counts">
 
@@ -107,7 +109,7 @@ Both panels show the same data and can run at the same time.
 | ----------------------- | -------------------------------------------------- |
 | Docker only             | Browser panel, **full token data**, always-on-top pop out\*\* |
 | Docker + `curl`\*       | Same — the server reads the transcripts itself      |
-| Docker + Python         | All of the above, read host-side                    |
+| Docker + Python         | All of the above, plus a closed session leaving the panel within seconds\*\*\* |
 | Docker + Python + tkinter | Desktop panel as well: click-to-focus, chimes, minimise badge |
 
 \* `curl` ships with Windows 10+, macOS and most Linux distributions. The
@@ -117,6 +119,12 @@ gives up silently rather than ever interfering with Claude.
 \*\* **pop out** uses Chrome's Document Picture-in-Picture for a genuinely
 always-on-top window. Other browsers fall back to a plain popup, which is still
 a small dedicated window but cannot float above other applications.
+
+\*\*\* Checking that a registered session's process is still alive can only be
+done on the host, and that needs Python. Without it a session that was killed
+rather than quit stays on the panel until Claude Code next tidies its own
+registry — see [Knowing a session has really
+gone](#knowing-a-session-has-really-gone).
 
 ## How it works
 
@@ -281,8 +289,10 @@ bright edge, in both panels. Silent, deliberately - the chime already had its
 turn when the session went amber, and a second sound for the same event is how
 alerts get ignored.
 
-It stops the moment the session moves on, or you open it. Minimising does not
-hide it: the badge's amber lamp breathes in step.
+It stops when the session stops waiting — you answer the prompt and it goes
+back to red. Opening the session clears its banner but not the escalation:
+until you have actually dealt with it, it is still waiting on you. Minimising
+does not hide it either, the badge's amber lamp breathes in step.
 
 ### Finished while you were away
 
@@ -449,10 +459,20 @@ python tests/run_all.py            # everything
 python tests/run_all.py panel hook # just those modules
 ```
 
-285 tests, zero dependencies. The server tests skip unless `fastapi` is
-importable;
-install `server/requirements.txt` into a venv to run them too. Nothing in the
-suite touches your real `settings.json`, port 8787, or the running panel.
+299 tests, zero dependencies. The server tests skip unless `fastapi` is
+importable, so the quickest way to run the whole suite is inside the image that
+already has it:
+
+```bash
+docker run --rm -v "$PWD:/src" -w /src claude_trafficlight-trafficlight \
+    python tests/run_all.py server hook session_watch transcript \
+    chime install_hooks bootstrap
+```
+
+(The panel modules need tkinter, which the image does not carry - run those on
+the host. On Git Bash, prefix that command with `MSYS_NO_PATHCONV=1`, or it
+rewrites `/src` into a Windows path.) Nothing in the suite touches your real
+`settings.json`, port 8787, or the running panel.
 
 ## Notes and limits
 
@@ -474,5 +494,13 @@ suite touches your real `settings.json`, port 8787, or the running panel.
   Delete the file if you change Python installations.
 * The server binds to `127.0.0.1` only. Point the panel and hooks elsewhere
   with `CLAUDE_LIGHT_URL`.
+* **Finished while you were away** needs the system idle time, which only
+  Windows offers without a dependency. Elsewhere a finished banner fades after
+  four seconds as it always did.
+* The liveness watcher is started by the hook and exits with the last session.
+  `CLAUDE_LIGHT_WATCH=0` stops it from being started at all.
+* Sound, volume and theme are shared between the panels and stored in
+  `~/.claude/claude-trafficlight/panel-settings.json`; size and position stay
+  per panel.
 * On Linux, click-to-focus needs `wmctrl` or `xdotool`, and chimes need one of
   `paplay` / `aplay` / `ffplay`. `install.py --check` tells you what is missing.
