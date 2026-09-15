@@ -40,7 +40,9 @@ payload into your `~/.claude/` and registers it in `settings.json` itself, so:
 read at session start. New sessions appear on their own.
 
 > To stop it touching `settings.json`, set `TRAFFICLIGHT_INSTALL_HOOKS=0` in
-> `docker-compose.yml`. A timestamped backup is written before any change.
+> `docker-compose.yml`. A timestamped backup is written before any change —
+> and when the registration is already correct, nothing is written at all, so
+> repeated `docker compose up` runs leave the file untouched.
 
 ### Uninstall
 
@@ -174,8 +176,11 @@ A sound only fires for a change you could actually see. Subagents run inside
 their parent's session, so their churn shows up as the parent changing state —
 an agent finishing makes the parent fire `Stop` (green) and immediately pick the
 work back up (red), and the green is gone before it reaches the screen. A chime
-is therefore held for 700ms and dropped if the state has already moved on, and a
-session with agents still running stays silent because it is not finished.
+is therefore held for 700ms and dropped if the state has already moved on —
+including when a newer change has since been armed — and a session with agents
+still running stays silent because it is not finished. The agent count is read
+from the transcript's turn footers, so it can lag by one turn; it is ignored
+once stale rather than trusted forever.
 
 Six alert sounds, all synthesised in memory (no audio files):
 
@@ -255,7 +260,7 @@ Read from the session transcript, so they are exact, not estimates.
   tens of millions and would make a single "tokens used" figure meaningless.
 * **Agents** — subagents currently running for that session. Subagents run
   *inside* their parent session and never get a row of their own, so the
-  collapsed row shows a small `⚙N` badge instead.
+  collapsed row shows a small `⚙N` badge instead — in both panels.
 
 The context limit is read from the transcript's model attachment, which is the
 only place the `[1m]` suffix appears — `message.model` says `claude-opus-5` for
@@ -283,7 +288,8 @@ python tests/run_all.py            # everything
 python tests/run_all.py panel hook # just those modules
 ```
 
-Zero dependencies. The server tests skip unless `fastapi` is importable;
+224 tests, zero dependencies. The server tests skip unless `fastapi` is
+importable;
 install `server/requirements.txt` into a venv to run them too. Nothing in the
 suite touches your real `settings.json`, port 8787, or the running panel.
 
