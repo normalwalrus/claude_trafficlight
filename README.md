@@ -2,7 +2,7 @@
 
 A traffic light for every Claude Code session you have running.
 
-**Red** = working &nbsp;&middot;&nbsp; **Orange** = waiting on you &nbsp;&middot;&nbsp; **Green** = done
+**Red** = working &nbsp;&middot;&nbsp; **Amber** = waiting on you &nbsp;&middot;&nbsp; **Green** = done
 
 <img src="docs/panel.png" width="420" alt="The always-on-top panel: three traffic lights, one per session">
 
@@ -51,8 +51,9 @@ python install.py --remove     # unregisters the hooks and removes the payload
 
 ### Optional: the native panel
 
-The browser panel cannot float above your windows or raise your editor — no
-container can. If you have Python 3.8+ on the host, add:
+The browser panel floats fine via **pop out**, but it cannot raise your editor
+when you click a row — no container can reach your windows. If you have
+Python 3.8+ on the host, add:
 
 ```bash
 python run.py              # always-on-top widget, click-to-focus
@@ -67,14 +68,18 @@ Both panels show the same data and can run at the same time.
 
 | Host has                | You get                                            |
 | ----------------------- | -------------------------------------------------- |
-| Docker only             | Browser panel, lights, **full token data**          |
+| Docker only             | Browser panel, **full token data**, always-on-top pop out\*\* |
 | Docker + `curl`\*       | Same — the server reads the transcripts itself      |
 | Docker + Python         | All of the above, read host-side                    |
-| Docker + Python + tkinter | Always-on-top panel, click-to-focus, chimes       |
+| Docker + Python + tkinter | Desktop panel as well: click-to-focus, chimes, minimise badge |
 
 \* `curl` ships with Windows 10+, macOS and most Linux distributions. The
 generated hook launcher tries `py`, `python`, `python3`, then `curl`, and
 gives up silently rather than ever interfering with Claude.
+
+\*\* **pop out** uses Chrome's Document Picture-in-Picture for a genuinely
+always-on-top window. Other browsers fall back to a plain popup, which is still
+a small dedicated window but cannot float above other applications.
 
 ## How it works
 
@@ -141,6 +146,13 @@ registry cannot be read at all.
 | `×` in the header        | Minimise to a small badge                       |
 | Click the badge          | Restore the panel                               |
 | Right-click → Quit       | Actually close it (the server keeps running)    |
+
+<img src="docs/panel-badge.png" width="110" alt="The minimised badge: three tiny lamps and a session count">
+
+The `×` **minimises** rather than quits. The badge stays on top, lights
+whichever state most wants your attention, and shows how many sessions are
+running; clicking it brings the panel straight back. Quitting is on the
+right-click menu, so it takes a deliberate choice rather than one stray click.
 
 ### Alerts
 
