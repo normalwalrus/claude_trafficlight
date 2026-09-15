@@ -1,0 +1,28 @@
+services:
+  trafficlight:
+    build:
+      # Repo root, so the image can carry the hook payload it installs.
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: claude-trafficlight
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      # Claude Code's home. Gives the container two things: settings.json, so
+      # it can install the hooks itself, and projects/, so it can read token
+      # usage from the transcripts without any host-side Python.
+      - "${HOME:-${USERPROFILE}}/.claude:/host-claude"
+    environment:
+      # The same directory as the *host* sees it - hook commands in
+      # settings.json must be host-absolute paths.
+      HOST_HOME: "${HOME:-${USERPROFILE}}"
+      # Drop a session that has not reported in this many seconds.
+      STALE_SECONDS: "900"
+      # Set to 0 to leave ~/.claude/settings.json alone.
+      TRAFFICLIGHT_INSTALL_HOOKS: "1"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8787/healthz',timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

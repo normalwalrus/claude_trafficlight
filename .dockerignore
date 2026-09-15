@@ -1,0 +1,12 @@
+.git
+.gitignore
+__pycache__
+**/__pycache__
+*.py[cod]
+.venv
+venv
+tests
+panel
+run.py
+install.py
+README.md

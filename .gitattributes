@@ -1,0 +1,16 @@
+# Line endings are load-bearing here.
+#
+# entrypoint.sh and hook.sh are executed by /bin/sh (in the container, and on
+# macOS/Linux hosts). Checked out with CRLF on a Windows clone, the shebang
+# becomes "#!/bin/sh\r" and nothing runs. Pin them to LF everywhere.
+* text=auto eol=lf
+
+*.sh      text eol=lf
+Dockerfile text eol=lf
+
+# cmd.exe mis-parses LF-only batch files.
+*.cmd     text eol=crlf
+*.ps1     text eol=crlf
+*.vbs     text eol=crlf
+
+*.png     binary

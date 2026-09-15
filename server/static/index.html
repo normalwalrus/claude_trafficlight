@@ -1,0 +1,669 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Claude Traffic Light</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #15171c;
+    --row: #1a1d24;
+    --row-hover: #1d212a;
+    --border: #2b3038;
+    --fg: #e6e9ef;
+    --dim: #7f8798;
+    --header: #69707f;
+    --off: #282c35;
+    --red: #ff5964;
+    --orange: #ffb03a;
+    --green: #3ddc84;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 16px calc(24px + env(safe-area-inset-bottom, 0px));
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.4 "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    display: flex;
+    justify-content: center;
+  }
+  .panel {
+    width: 100%;
+    max-width: calc(560px * var(--scale, 1));
+    font-size: calc(14px * var(--scale, 1));
+    zoom: var(--scale, 1);            /* scales the rows as one piece */
+  }
+
+  #settings {
+    margin-top: 10px;
+    padding: 12px 14px;
+    background: #101318;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  #settings h2 {
+    margin: 0 0 10px;
+    font-size: 11px; font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase;
+    color: var(--header);
+  }
+  #settings label {
+    display: grid;
+    grid-template-columns: 62px 1fr auto;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 9px;
+    font-size: 12px; color: var(--dim);
+  }
+  #settings label:last-child { margin-bottom: 0; }
+  #settings output { color: var(--fg); font-size: 12px; min-width: 52px;
+                     text-align: right; }
+  #settings select {
+    background: #1c2029; color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 8px; font: inherit; font-size: 12px;
+  }
+  #settings input[type=range] { width: 100%; accent-color: var(--green); }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 4px 10px;
+    border-bottom: 1px solid var(--border);
+    color: var(--header);
+    font-size: 12px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .conn {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--red); flex: none;
+    transition: background .3s;
+  }
+  .conn.ok { background: var(--green); }
+  header .spacer { flex: 1; }
+  button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--header);
+    font: inherit;
+    font-size: 11px;
+    letter-spacing: .04em;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  button:hover { color: var(--fg); border-color: #3a414d; }
+  button[aria-pressed="true"] { color: var(--green); border-color: #2c4a3a; }
+
+  ul { list-style: none; margin: 0; padding: 0; }
+  li {
+    padding: 12px 14px;
+    cursor: pointer;
+    margin-top: 8px;
+    background: var(--row);
+    border: 1px solid transparent;
+    border-radius: 10px;
+    transition: background .2s, border-color .2s;
+  }
+  li:hover { background: var(--row-hover); }
+
+  .head {
+    position: relative;               /* the change banner overlays this */
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    align-items: center;
+    gap: 14px;
+  }
+
+  li[data-state="red"]    { --lit: var(--red);    --halo: #59222a; }
+  li[data-state="orange"] { --lit: var(--orange); --halo: #5a3f15; }
+  li[data-state="green"]  { --lit: var(--green);  --halo: #175130; }
+
+  /* The signal head: a cast housing with three bezelled lamps. */
+  .signal {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex: none;
+    padding: 5px 8px;
+    border-radius: 9px;
+    background: linear-gradient(#171b24, #0b0d11);
+    border: 1px solid #353d4a;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 1px 3px rgba(0,0,0,.55);
+  }
+  .signal i {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    display: block;
+    background: #191d24;
+    box-shadow: inset 0 0 0 1px #2b323d, inset 0 2px 3px rgba(0,0,0,.6);
+    transition: background .3s ease, box-shadow .3s ease;
+  }
+  li[data-state="red"]    .signal i:nth-child(1),
+  li[data-state="orange"] .signal i:nth-child(2),
+  li[data-state="green"]  .signal i:nth-child(3) {
+    background: var(--lit);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.28),
+                0 0 0 3px var(--halo),
+                0 0 10px 2px var(--lit);
+  }
+  /* One swell on the lamp that just lit. */
+  @keyframes lampPulse {
+    0%   { box-shadow: inset 0 0 0 1px rgba(255,255,255,.28),
+                       0 0 0 3px var(--halo), 0 0 10px 2px var(--lit); }
+    45%  { box-shadow: inset 0 0 0 1px rgba(255,255,255,.5),
+                       0 0 0 7px var(--halo), 0 0 20px 6px var(--lit); }
+    100% { box-shadow: inset 0 0 0 1px rgba(255,255,255,.28),
+                       0 0 0 3px var(--halo), 0 0 10px 2px var(--lit); }
+  }
+  li.pulsing[data-state="red"]    .signal i:nth-child(1),
+  li.pulsing[data-state="orange"] .signal i:nth-child(2),
+  li.pulsing[data-state="green"]  .signal i:nth-child(3) {
+    animation: lampPulse .6s ease-in-out;
+  }
+
+  /* Change banner: fades in over the row's own text, never resizes it. */
+  .banner {
+    position: absolute;
+    top: -4px; bottom: -4px; right: -4px;
+    left: 74px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .01em;
+    color: var(--lit);
+    background: var(--halo);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .35s ease;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .banner.show { opacity: 1; }
+  /* The row's own text fades out as the banner fades in. Leaving both at full
+     strength during the crossover overlaps two strings into unreadable mush. */
+  .head .meta, .head .time, .head .chev { transition: opacity .35s ease; }
+  li.announcing .meta,
+  li.announcing .time,
+  li.announcing .chev { opacity: 0; }
+
+  .meta { flex: 1; min-width: 0; }
+  .name {
+    font-size: 13px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .sub {
+    display: block;
+    font-size: 11px; color: var(--dim); margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .time {
+    font-family: ui-monospace, Consolas, "SF Mono", monospace;
+    font-size: 12px; color: var(--dim); flex: none;
+    font-variant-numeric: tabular-nums;
+  }
+  .chev {
+    color: var(--header); font-size: 11px; flex: none;
+    transition: transform .15s;
+  }
+  li.open .chev { transform: rotate(90deg); }
+
+  .detail {
+    margin-top: 10px; padding-top: 10px;
+    border-top: 1px solid var(--border);
+    font-size: 12px; color: var(--dim);
+    display: grid; gap: 7px;
+    cursor: default;
+  }
+  li:not(.open) .detail { display: none; }
+  li.announcing .detail { opacity: .25; transition: opacity .35s ease; }
+  .drow { display: flex; justify-content: space-between; gap: 12px; }
+  .drow b { font-weight: 600; color: var(--fg); }
+  .agents { color: var(--orange); }
+  .bar {
+    height: 5px; border-radius: 3px; background: #22262f; overflow: hidden;
+  }
+  .bar span { display: block; height: 100%; background: var(--green); }
+  .bar.warn span { background: var(--orange); }
+  .bar.full span { background: var(--red); }
+  .dim2 { color: var(--header); font-size: 11px; }
+  .acts { display: flex; gap: 8px; margin-top: 2px; }
+  .acts button { font-size: 11px; }
+
+  .empty {
+    padding: 28px 14px; text-align: center;
+    color: var(--dim); font-size: 13px;
+  }
+  footer {
+    margin-top: 16px; padding: 0 4px;
+    color: var(--header); font-size: 11px; line-height: 1.6;
+  }
+  kbd {
+    font: inherit; background: #20242c; border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px;
+  }
+</style>
+</head>
+<body>
+<div class="panel">
+  <header>
+    <span class="conn" id="conn"></span>
+    <span>Claude</span>
+    <span class="spacer"></span>
+    <span id="count">connecting</span>
+    <button id="sound" aria-pressed="false" title="Browsers require a click before audio can play">Sound off</button>
+    <button id="gear" aria-pressed="false" title="Settings">&#9881;</button>
+  </header>
+
+  <section id="settings" hidden>
+    <h2>Settings</h2>
+    <label>Size
+      <input id="setScale" type="range" min="75" max="150" step="5" value="100">
+      <output id="outScale">100%</output>
+    </label>
+    <label>Volume
+      <input id="setVol" type="range" min="0" max="100" step="1" value="60">
+      <output id="outVol">60%</output>
+    </label>
+    <label>Sound
+      <select id="setSound"></select>
+      <button id="testSound" type="button">&#9655; test</button>
+    </label>
+  </section>
+
+  <ul id="rows"></ul>
+  <div class="empty" id="empty">Waiting for Claude sessions&hellip;</div>
+
+  <footer>
+    Red = working &middot; Orange = waiting on you &middot; Green = done<br>
+    Click a row for tokens and activity. For an always-on-top window that can
+    also focus the right terminal, run
+    <kbd>python run.py</kbd> on the host.
+  </footer>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const rowsEl  = document.getElementById("rows");
+  const emptyEl = document.getElementById("empty");
+  const countEl = document.getElementById("count");
+  const connEl  = document.getElementById("conn");
+  const soundEl = document.getElementById("sound");
+
+  let sessions = [];
+  let clockOffset = 0;          // server clock minus ours
+  let prevState = new Map();
+  let seenFirst = false;        // suppresses a chime storm on (re)connect
+  let audio = null;
+
+  // --- alert sounds, loaded from sounds.json so the browser and the desktop
+  // panel stay in step from one definition. What separates a ding from a beep
+  // is mostly inharmonicity: a struck bar rings at ~1 : 2.76 : 5.40 : 8.93
+  // times its fundamental with the upper modes dying first, whereas a beep is
+  // a plain harmonic stack held flat.
+  const ATTACK = 0.0022;
+  let SOUNDS = null;
+  let sound = localStorage.getItem("clt.sound") || "oven";
+  // 0-100, matching panel/chime.py. Legacy named levels are migrated.
+  const LEGACY_VOLUMES = { quiet: 35, normal: 60, loud: 100 };
+  const MAX_GAIN = 0.20;
+  let volume = readVolume();
+
+  function readVolume() {
+    const raw = localStorage.getItem("clt.volume");
+    if (raw === null) return 60;
+    if (raw in LEGACY_VOLUMES) return LEGACY_VOLUMES[raw];
+    const n = Number(raw);
+    return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : 60;
+  }
+
+  // Squared, not linear: perceived loudness runs roughly with the square root
+  // of amplitude, so a linear slider sounds equally loud over most of its
+  // travel and only drops off right at the bottom.
+  function gainFor(v) {
+    v = Math.max(0, Math.min(100, Number(v) || 0));
+    return v <= 0 ? 0 : MAX_GAIN * Math.pow(v / 100, 2);
+  }
+
+  fetch("sounds.json")
+    .then(r => r.json())
+    .then(d => { SOUNDS = d; fillSoundPicker(); })
+    .catch(() => { /* chimes simply stay silent */ });
+
+  function strike(ctx, voice, spec, freq, at, gain) {
+    for (const [ratio, amp, decayMult] of voice) {
+      const osc = ctx.createOscillator();
+      const env = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq * ratio;
+      const tail = spec.gate !== undefined
+        ? spec.gate + spec.decay * 4
+        : Math.min(spec.ring, spec.decay * decayMult * 5);
+      env.gain.setValueAtTime(0, at);
+      env.gain.linearRampToValueAtTime(amp * gain, at + ATTACK);
+      if (spec.gate !== undefined) {
+        env.gain.setValueAtTime(amp * gain, at + spec.gate);
+      }
+      env.gain.exponentialRampToValueAtTime(0.0001, at + Math.max(tail, 0.05));
+      osc.connect(env).connect(ctx.destination);
+      osc.start(at);
+      osc.stop(at + Math.max(tail, 0.05) + 0.02);
+    }
+  }
+
+  function chime(kind) {
+    if (!audio || !SOUNDS) return;
+    const entry = SOUNDS.sounds[sound] || SOUNDS.sounds.oven;
+    const spec = kind === "orange" ? entry.orange : entry.green;
+    const voice = SOUNDS.voices[entry.voice] || SOUNDS.voices.bar;
+    const base = gainFor(volume);
+    if (base <= 0) return;             // muted by request
+    const t = audio.currentTime + 0.01;
+    for (const [offset, freqScale, gain] of spec.strikes) {
+      strike(audio, voice, spec, spec.freq * freqScale, t + offset, base * gain);
+    }
+  }
+
+  soundEl.addEventListener("click", () => {
+    if (audio) {
+      audio.close();
+      audio = null;
+      soundEl.setAttribute("aria-pressed", "false");
+      soundEl.textContent = "Sound off";
+      return;
+    }
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    audio = new Ctx();              // created inside a click: autoplay-safe
+    soundEl.setAttribute("aria-pressed", "true");
+    soundEl.textContent = "Sound on";
+    chime("green");
+  });
+
+  // --- rendering
+  function fmt(seconds) {
+    seconds = Math.max(0, Math.floor(seconds));
+    if (seconds >= 3600) {
+      return Math.floor(seconds / 3600) + ":" +
+             String(Math.floor((seconds % 3600) / 60)).padStart(2, "0") + "h";
+    }
+    return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
+  }
+
+  function render() {
+    const now = Date.now() / 1000 + clockOffset;
+    emptyEl.hidden = sessions.length > 0;
+    countEl.textContent = sessions.length
+      ? sessions.length + (sessions.length === 1 ? " session" : " sessions")
+      : "no sessions";
+
+    const seen = new Set();
+    for (const s of sessions) {
+      const id = String(s.session_id);
+      seen.add(id);
+      let li = rowsEl.querySelector('li[data-id="' + CSS.escape(id) + '"]');
+      if (!li) {
+        li = document.createElement("li");
+        li.dataset.id = id;
+        li.innerHTML =
+          '<div class="head">' +
+            '<span class="signal"><i></i><i></i><i></i></span>' +
+            '<span class="meta"><span class="name"></span>' +
+              '<span class="sub"></span></span>' +
+            '<span class="time"></span>' +
+            '<span class="chev">&#9656;</span>' +
+            '<div class="banner"></div>' +
+          '</div>' +
+          '<div class="detail">' +
+            '<div class="drow"><span class="activity"></span>' +
+              '<span class="agents"></span></div>' +
+            '<div class="ctxline drow"><span class="ctx"></span>' +
+              '<span class="pct"></span></div>' +
+            '<div class="bar"><span></span></div>' +
+            '<div class="toks"></div>' +
+            '<div class="dim2 ident"></div>' +
+          '</div>';
+        rowsEl.appendChild(li);
+      }
+      li.dataset.state = s.state || "green";
+      li.querySelector(".name").textContent = s.project || "claude";
+      li.querySelector(".sub").textContent =
+        s.state === "orange" && s.detail ? s.detail : (s.cwd || "");
+      const elapsed = now - (Number(s.since) || now);
+      li.querySelector(".time").textContent =
+        s.state === "green" && elapsed > 300 ? "idle" : fmt(elapsed);
+      renderDetail(li, s);
+    }
+
+    for (const li of Array.from(rowsEl.children)) {
+      if (!seen.has(li.dataset.id)) li.remove();
+    }
+  }
+
+  function tok(n) {
+    n = Math.max(0, Number(n) || 0);
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+    if (n >= 1e3) return Math.round(n / 1e3) + "k";
+    return String(n);
+  }
+
+  function renderDetail(li, s) {
+    const u = (s.usage && typeof s.usage === "object") ? s.usage : {};
+    const activity = s.state === "red"
+      ? "Working" + (s.tool ? "  ·  " + s.tool : "")
+      : s.state === "orange" ? (s.detail || "Waiting for you") : "Idle";
+    li.querySelector(".activity").textContent = activity;
+
+    const agents = Number(u.agents) || 0;
+    li.querySelector(".agents").textContent =
+      agents ? agents + (agents === 1 ? " agent" : " agents") : "";
+
+    const limit = Number(u.context_limit) || 0;
+    const used = Number(u.context_tokens) || 0;
+    const ctxline = li.querySelector(".ctxline");
+    const bar = li.querySelector(".bar");
+    if (limit > 0) {
+      const frac = Math.min(1, Math.max(0, used / limit));
+      ctxline.hidden = false;
+      bar.hidden = false;
+      li.querySelector(".ctx").innerHTML =
+        "Context <b>" + tok(used) + "</b> / " + tok(limit);
+      li.querySelector(".pct").textContent = Math.round(frac * 100) + "%";
+      bar.className = "bar" + (frac >= 0.9 ? " full" : frac >= 0.75 ? " warn" : "");
+      bar.firstElementChild.style.width = (frac * 100).toFixed(1) + "%";
+      li.querySelector(".toks").innerHTML =
+        "Out <b>" + tok(u.tokens_out) + "</b>&nbsp;&nbsp; In <b>" +
+        tok((Number(u.tokens_in) || 0) + (Number(u.tokens_cache_write) || 0)) +
+        "</b>&nbsp;&nbsp; Cached <b>" + tok(u.tokens_cache_read) + "</b>";
+      li.querySelector(".ident").textContent =
+        [u.model_name || u.model, s.pid ? "pid " + s.pid : "",
+         u.turns ? u.turns + " turns" : ""].filter(Boolean).join("  ·  ");
+    } else {
+      ctxline.hidden = true;
+      bar.hidden = true;
+      li.querySelector(".toks").textContent =
+        "No token data — restart this Claude session";
+      li.querySelector(".ident").textContent = s.cwd || "";
+    }
+  }
+
+  rowsEl.addEventListener("click", ev => {
+    if (ev.target.closest(".detail")) return;   // don't collapse when selecting text
+    const li = ev.target.closest("li");
+    if (li) li.classList.toggle("open");
+  });
+
+  // --- change announcements
+  const BANNER_MS = 4000;
+  const prevSince = new Map();
+  const bannerTimers = new Map();
+
+  function row(id) {
+    return rowsEl.querySelector('li[data-id="' + CSS.escape(id) + '"]');
+  }
+
+  function bannerText(s, was) {
+    if (s.state === "green") {
+      const started = prevSince.get(String(s.session_id));
+      const spent = started ? (Date.now() / 1000 + clockOffset) - started : 0;
+      return was === "red" && spent > 1
+        ? "finished · " + fmt(spent)
+        : "finished";
+    }
+    return (s.detail || "").trim() || "waiting for you";
+  }
+
+  function announce(id, text) {
+    const li = row(id);
+    if (!li) return;
+    const el = li.querySelector(".banner");
+    el.textContent = text;
+    el.classList.add("show");
+    li.classList.add("announcing");
+    clearTimeout(bannerTimers.get(id));
+    bannerTimers.set(id, setTimeout(() => {
+      el.classList.remove("show");
+      li.classList.remove("announcing");
+      bannerTimers.delete(id);
+    }, BANNER_MS));
+  }
+
+  function clearBanner(id) {
+    // Whatever the last banner said is now out of date: a row that has moved
+    // on must not keep claiming it needs permission.
+    clearTimeout(bannerTimers.get(id));
+    bannerTimers.delete(id);
+    const li = row(id);
+    if (!li) return;
+    li.querySelector(".banner").classList.remove("show");
+    li.classList.remove("announcing");
+  }
+
+  function pulse(id) {
+    const li = row(id);
+    if (!li) return;
+    li.classList.remove("pulsing");
+    void li.offsetWidth;            // restart the animation
+    li.classList.add("pulsing");
+    setTimeout(() => li.classList.remove("pulsing"), 700);
+  }
+
+  function onSnapshot(data) {
+    clockOffset = (Number(data.now) || Date.now() / 1000) - Date.now() / 1000;
+    sessions = Array.isArray(data.sessions) ? data.sessions : [];
+
+    for (const s of sessions) {
+      const id = String(s.session_id);
+      const was = prevState.get(id);
+      const changed = seenFirst && was && was !== s.state;
+      if (changed) { pulse(id); clearBanner(id); }
+      if (changed && (s.state === "orange" || s.state === "green")) {
+        chime(s.state);
+        announce(id, bannerText(s, was));
+      }
+      prevState.set(id, s.state);
+      prevSince.set(id, Number(s.since) || Date.now() / 1000);
+    }
+    const live = new Set(sessions.map(s => String(s.session_id)));
+    for (const id of Array.from(prevState.keys())) {
+      if (!live.has(id)) {
+        prevState.delete(id);
+        prevSince.delete(id);
+        clearTimeout(bannerTimers.get(id));
+        bannerTimers.delete(id);
+      }
+    }
+    seenFirst = true;
+    render();
+  }
+
+  // --- feed
+  function connect() {
+    const es = new EventSource("stream");
+    es.onopen = () => connEl.classList.add("ok");
+    es.onmessage = ev => {
+      try { onSnapshot(JSON.parse(ev.data)); } catch (_) { /* ignore a bad frame */ }
+    };
+    es.onerror = () => {
+      connEl.classList.remove("ok");
+      seenFirst = false;
+      // EventSource retries on its own; this only covers a hard close.
+      if (es.readyState === EventSource.CLOSED) setTimeout(connect, 2000);
+    };
+  }
+
+  // --- settings
+  const gearEl   = document.getElementById("gear");
+  const setEl    = document.getElementById("settings");
+  const scaleEl  = document.getElementById("setScale");
+  const outScale = document.getElementById("outScale");
+  const volEl    = document.getElementById("setVol");
+  const outVol   = document.getElementById("outVol");
+  const soundSel = document.getElementById("setSound");
+  const testEl   = document.getElementById("testSound");
+
+  function remember(key, value) {
+    try { localStorage.setItem(key, value); } catch (_) { /* private mode */ }
+  }
+
+  function applyScale(percent) {
+    document.querySelector(".panel").style.setProperty("--scale", percent / 100);
+    outScale.value = percent + "%";
+  }
+
+  function fillSoundPicker() {
+    if (!SOUNDS) return;
+    soundSel.innerHTML = "";
+    for (const name of SOUNDS.order) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = SOUNDS.sounds[name].label;
+      soundSel.appendChild(opt);
+    }
+    if (!SOUNDS.sounds[sound]) sound = SOUNDS.order[0];
+    soundSel.value = sound;
+  }
+
+  gearEl.addEventListener("click", () => {
+    setEl.hidden = !setEl.hidden;
+    gearEl.setAttribute("aria-pressed", String(!setEl.hidden));
+  });
+  scaleEl.addEventListener("input", () => {
+    applyScale(Number(scaleEl.value));
+    remember("clt.scale", scaleEl.value);
+  });
+  volEl.addEventListener("input", () => {
+    volume = Number(volEl.value);
+    outVol.value = volume <= 0 ? "muted" : volume + "%";
+    remember("clt.volume", String(volume));
+  });
+  // One preview when the drag ends, not one per pixel of travel.
+  volEl.addEventListener("change", () => chime("green"));
+  soundSel.addEventListener("change", () => {
+    sound = soundSel.value;
+    remember("clt.sound", sound);
+    chime("green");
+  });
+  testEl.addEventListener("click", () => chime("green"));
+
+  // restore what this browser remembered
+  const savedScale = Number(localStorage.getItem("clt.scale")) || 100;
+  scaleEl.value = String(savedScale);
+  applyScale(savedScale);
+  volEl.value = String(volume);
+  outVol.value = volume <= 0 ? "muted" : volume + "%";
+
+  connect();
+  setInterval(render, 500);
+})();
+</script>
+</body>
+</html>
