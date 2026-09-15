@@ -626,7 +626,9 @@
   rowsEl.addEventListener("click", ev => {
     if (ev.target.closest(".detail")) return;   // don't collapse when selecting text
     const li = ev.target.closest("li");
-    if (li) li.classList.toggle("open");
+    if (!li) return;
+    li.classList.toggle("open");
+    clearBanner(li.dataset.id);   // you have seen it; stop shouting
   });
 
   // --- change announcements
@@ -646,10 +648,12 @@
         ? "finished · " + fmt(spent)
         : "finished";
     }
-    return (s.detail || "").trim() || "waiting for you";
+    const detail = (s.detail || "").trim() || "waiting for you";
+    const project = (s.project || "").trim();
+    return project ? project + "  ·  " + detail : detail;
   }
 
-  function announce(id, text) {
+  function announce(id, text, sticky) {
     const li = row(id);
     if (!li) return;
     const el = li.querySelector(".banner");
@@ -657,6 +661,11 @@
     el.classList.add("show");
     li.classList.add("announcing");
     clearTimeout(bannerTimers.get(id));
+    bannerTimers.delete(id);
+    // A "needs you" banner has no expiry: four seconds is easy to miss and
+    // this is the one message you must not. The browser cannot see which
+    // window you are looking at, so clicking the row is what retires it.
+    if (sticky) return;
     bannerTimers.set(id, setTimeout(() => {
       el.classList.remove("show");
       li.classList.remove("announcing");
@@ -716,7 +725,7 @@
       if (changed) { pulse(id); clearBanner(id); }
       if (changed && (s.state === "orange" || s.state === "green")) {
         armChime(id, s.state);
-        announce(id, bannerText(s, was));
+        announce(id, bannerText(s, was), s.state === "orange");
       }
       prevState.set(id, s.state);
       prevSince.set(id, Number(s.since) || Date.now() / 1000);

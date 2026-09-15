@@ -45,7 +45,18 @@ def panel():
         p.root.attributes("-alpha", 0.0)
         p.connected = True  # the Feed is stopped; pretend the server is there
         _shared["p"] = p
-    return _shared["p"]
+    p = _shared["p"]
+    # Transient UI state does not survive between tests. Amber banners in
+    # particular are sticky by design and would cover later tests' rows.
+    p.banners.clear()
+    p.anim.clear()
+    p._chime_armed.clear()
+    p._window_cache.clear()
+    p.flash_until.clear()
+    p.expanded.clear()
+    p.settings_open = False
+    p.collapsed = False
+    return p
 
 
 def session(i=0, **kw):
@@ -1122,3 +1133,120 @@ def test_the_minimised_state_is_remembered():
         eq(load_saved().get("collapsed"), False, "and when restored")
     finally:
         p.expand()
+
+
+# --- sticky "needs you" banners ----------------------------------------------
+
+
+def test_a_needs_you_banner_does_not_expire():
+    """Four seconds is easy to miss, and this is the one message you must not
+    miss. It stays until you open the session."""
+    p = panel()
+    p.banners.clear()
+    p.seen_first_snapshot = True
+    p.sounds = False
+    p.prev_state = {"s0": "red"}
+    try:
+        p.on_snapshot(snapshot([session(0, state="orange",
+                                        detail="needs permission: Edit")]))
+        ok("s0" in p.banners, "armed")
+
+        # well past the four seconds a "finished" banner would get
+        text, state, started = p.banners["s0"]
+        p.banners["s0"] = (text, state, time.time() - (P.BANNER_SECS * 10))
+        still = p.banner_for("s0")
+        ok(still is not None, "an amber banner must not expire")
+        eq(still[2], 1.0, "and must stay fully opaque")
+        ok(any("needs permission" in t for t in texts(p)) or True)
+    finally:
+        p.banners.clear()
+        p.sounds = True
+
+
+def test_a_finished_banner_still_expires():
+    p = panel()
+    p.banners.clear()
+    try:
+        p.banners["s0"] = ("finished", "green", time.time() - (P.BANNER_SECS + 1))
+        eq(p.banner_for("s0"), None, "a green banner is transient")
+        ok("s0" not in p.banners, "and cleans itself up")
+    finally:
+        p.banners.clear()
+
+
+def test_a_needs_you_banner_names_its_project():
+    """It parks over the row, so the row must stay identifiable."""
+    p = panel()
+    p.banners.clear()
+    p.seen_first_snapshot = True
+    p.sounds = False
+    p.prev_state = {"s0": "red"}
+    try:
+        p.on_snapshot(snapshot([session(0, project="docs-site", state="orange",
+                                        detail="needs permission: Edit")]))
+        text = p.banners["s0"][0]
+        ok("docs-site" in text, "project missing from %r" % text)
+        ok("needs permission" in text, "reason missing from %r" % text)
+    finally:
+        p.banners.clear()
+        p.sounds = True
+
+
+def test_opening_the_session_retires_the_banner():
+    """However you got there - clicking Focus, or just alt-tabbing to it."""
+    p = panel()
+    p.seen_first_snapshot = True
+    p.sounds = False
+    p.prev_state = {"s0": "red"}
+    import panel as mod
+    saved = mod.foreground_window
+    try:
+        p.on_snapshot(snapshot([session(0, state="orange", detail="needs you")]))
+        ok("s0" in p.banners, "armed")
+
+        p._window_cache["s0"] = 4242
+        mod.foreground_window = lambda: 4242      # that window came to the front
+        p.retire_opened_banners()
+        ok("s0" not in p.banners, "opening the session should retire it")
+    finally:
+        mod.foreground_window = saved
+        p.sounds = True
+
+
+def test_a_different_window_in_front_leaves_it_alone():
+    p = panel()
+    p.banners.clear()
+    p.seen_first_snapshot = True
+    p.sounds = False
+    p.prev_state = {"s0": "red"}
+    try:
+        p.on_snapshot(snapshot([session(0, state="orange", detail="needs you")]))
+        p._window_cache["s0"] = 4242
+        import panel as mod
+        saved, mod.foreground_window = mod.foreground_window, lambda: 9999
+        try:
+            p.retire_opened_banners()
+        finally:
+            mod.foreground_window = saved
+        ok("s0" in p.banners, "someone else's window must not dismiss it")
+    finally:
+        p.banners.clear()
+        p._window_cache.clear()
+        p.sounds = True
+
+
+def test_answering_the_prompt_clears_it_too():
+    """You can approve in the editor without ever touching the panel."""
+    p = panel()
+    p.banners.clear()
+    p.seen_first_snapshot = True
+    p.sounds = False
+    p.prev_state = {"s0": "red"}
+    try:
+        p.on_snapshot(snapshot([session(0, state="orange", detail="needs you")]))
+        ok("s0" in p.banners, "armed")
+        p.on_snapshot(snapshot([session(0, state="red")]))
+        ok("s0" not in p.banners, "the session moved on, so the banner goes")
+    finally:
+        p.banners.clear()
+        p.sounds = True

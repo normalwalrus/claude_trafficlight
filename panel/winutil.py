@@ -242,6 +242,17 @@ def window_title(hwnd):
         return ""
 
 
+def foreground_window():
+    """The window the user is currently looking at, or 0."""
+    if sys.platform != "win32":
+        return 0
+    try:
+        ctypes, _ = _win32()
+        return int(ctypes.WinDLL("user32", use_last_error=True).GetForegroundWindow())
+    except Exception:
+        return 0
+
+
 def window_pid(hwnd):
     """The pid owning a window, or 0."""
     if sys.platform != "win32" or not hwnd:

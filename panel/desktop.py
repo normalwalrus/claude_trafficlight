@@ -158,6 +158,17 @@ def focus_session(pid, hwnd_hint=0, cwd=""):
     return False, 0
 
 
+def foreground_window():
+    """The window currently in front, or 0 where we cannot tell.
+
+    Used to retire a "needs you" banner once you have actually opened the
+    session, however you got there.
+    """
+    if IS_WIN:
+        return winutil.foreground_window()
+    return 0
+
+
 def window_title(handle):
     """A human-readable name for whatever focus_session returned."""
     if IS_WIN:

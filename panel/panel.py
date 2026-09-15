@@ -20,7 +20,8 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chime  # noqa: E402
 import themes  # noqa: E402
-from winutil import focus_session, window_title  # noqa: E402
+from desktop import foreground_window  # noqa: E402
+from winutil import focus_session, window_title, resolve_window  # noqa: E402
 
 SERVER = os.environ.get("CLAUDE_LIGHT_URL", "http://127.0.0.1:8787").rstrip("/")
 
@@ -324,6 +325,7 @@ class Panel:
         self.banners = {}       # sid -> (text, state, started)
         self.prev_since = {}    # sid -> when the previous state began
         self._chime_armed = {}  # sid -> (state, token) awaiting confirmation
+        self._window_cache = {}  # sid -> hwnd, so the foreground check is cheap
         self._chime_token = 0   # so a superseded timer cannot fire early
         self.collapsed = bool(self.cfg.get("collapsed", False))
         self._frame_job = None
@@ -539,6 +541,7 @@ class Panel:
                 self.anim.pop(sid, None)
                 self.banners.pop(sid, None)
                 self._chime_armed.pop(sid, None)
+                self._window_cache.pop(sid, None)
         self.expanded &= live
 
         self.sessions = sessions
@@ -603,8 +606,11 @@ class Panel:
             if was == "red" and spent > 1:
                 return "finished · " + fmt_elapsed(spent)
             return "finished"
-        detail = str(s.get("detail") or "").strip()
-        return detail or "waiting for you"
+        # This one stays put, so it has to carry the project name too -
+        # otherwise the row it is covering becomes unidentifiable.
+        detail = str(s.get("detail") or "").strip() or "waiting for you"
+        project = str(s.get("project") or "").strip()
+        return (project + "  ·  " + detail) if project else detail
 
     def busy(self):
         """True while a lamp is cross-fading or a banner is on screen."""
@@ -628,6 +634,7 @@ class Panel:
 
     def tick(self):
         try:
+            self.retire_opened_banners()
             self.draw()
             self.start_frames()
         except Exception:
@@ -1035,22 +1042,60 @@ class Panel:
     # --- change banners -----------------------------------------------------
 
     def banner_for(self, sid):
-        """(text, state, alpha) for a session's banner, or None."""
+        """(text, state, alpha) for a session's banner, or None.
+
+        A "needs you" banner has no expiry: it is the one message you must not
+        miss, and four seconds is easy to miss. It stays until you open that
+        session - by any route - or until the session moves on by itself.
+        """
         entry = self.banners.get(sid)
         if not entry:
             return None
         text, state, started = entry
         age = time.time() - started
+        if age < BANNER_FADE:
+            return text, state, max(0.0, age / BANNER_FADE)
+        if state == "orange":
+            return text, state, 1.0
         if age >= BANNER_SECS:
             self.banners.pop(sid, None)
             return None
-        if age < BANNER_FADE:
-            alpha = age / BANNER_FADE
-        elif age > BANNER_SECS - BANNER_FADE:
+        if age > BANNER_SECS - BANNER_FADE:
             alpha = (BANNER_SECS - age) / BANNER_FADE
         else:
             alpha = 1.0
         return text, state, max(0.0, min(1.0, alpha))
+
+    def retire_opened_banners(self):
+        """Drop a sticky banner once its session's window is in front.
+
+        Only runs while one is up, and only compares handles - the expensive
+        process walk is cached per session.
+        """
+        sticky = [sid for sid, e in self.banners.items() if e[1] == "orange"]
+        if not sticky:
+            return
+        front = foreground_window()
+        if not front:
+            return
+        for sid in sticky:
+            if self.window_for(sid) == front:
+                self.banners.pop(sid, None)
+                self.flash_until.pop(sid, None)
+
+    def window_for(self, sid):
+        """The window hosting a session, resolved once and remembered."""
+        cached = self._window_cache.get(sid)
+        if cached:
+            return cached
+        s = self.session_by_id(sid)
+        if not s:
+            return 0
+        hwnd = as_int(s.get("hwnd")) or resolve_window(as_int(s.get("pid")),
+                                                       str(s.get("cwd") or ""))
+        if hwnd:
+            self._window_cache[sid] = hwnd
+        return hwnd
 
     def draw_banner(self, top, banner):
         """Fades in over the row's own text - never changes the row height, so
@@ -1336,7 +1381,12 @@ class Panel:
         pid = as_int(s.get("pid"))
         hint = as_int(s.get("hwnd"))
         ok, hwnd = focus_session(pid, hint, str(s.get("cwd") or ""))
+        sid = s.get("session_id")
+        if hwnd:
+            self._window_cache[sid] = hwnd
         if ok:
+            self.banners.pop(sid, None)
+            self.flash_until.pop(sid, None)
             title = window_title(hwnd)
             self.toast(title[:40] if title else "focused")
         elif hwnd:

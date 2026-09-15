@@ -166,11 +166,19 @@ right-click menu, so it takes a deliberate choice rather than one stray click.
 ### Alerts
 
 A state change lights the new lamp with a 250ms cross-fade and a halo swell, and
-fades a tinted **banner** across the row for 4 seconds saying what happened
-(`finished · 2m 14s`, `needs permission: Edit`). Banners appear on orange and
-green only — going red is just Claude getting on with it — and a banner is
-dropped the moment that session changes again, so a row never keeps claiming it
-needs permission after you have answered.
+fades a tinted **banner** across the row saying what happened. Banners appear on
+amber and green only — going red is just Claude getting on with it — and a
+banner is dropped the moment that session changes again, so a row never keeps
+claiming it needs permission after you have answered.
+
+A **finished** banner (`finished · 2m 14s`) clears itself after four seconds. A
+**needs-you** banner does not: four seconds is easy to miss and this is the one
+message you must not. It stays until you actually open that session — the
+desktop panel watches which window is in front, so alt-tabbing to it counts as
+much as clicking Focus; the browser panel cannot see your windows, so clicking
+the row is what retires it there. Because it parks over the row it also carries
+the project name (`docs-site · needs permission: Edit`), so you can still tell
+which session is asking.
 
 A sound only fires for a change you could actually see. Subagents run inside
 their parent's session, so their churn shows up as the parent changing state —
@@ -288,7 +296,7 @@ python tests/run_all.py            # everything
 python tests/run_all.py panel hook # just those modules
 ```
 
-224 tests, zero dependencies. The server tests skip unless `fastapi` is
+230 tests, zero dependencies. The server tests skip unless `fastapi` is
 importable;
 install `server/requirements.txt` into a venv to run them too. Nothing in the
 suite touches your real `settings.json`, port 8787, or the running panel.
