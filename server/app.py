@@ -65,6 +65,36 @@ try:
 except Exception:
     _transcript = None
 
+# The curl fallback launcher posts the raw payload here instead of classifying
+# it host-side, so /hook has to reach for the same classifier the full hook
+# uses - otherwise a host without Python still goes amber when Claude is
+# merely idle, which is the one thing that fix exists to stop.
+try:
+    import claude_light_hook as _hook
+except Exception:  # pragma: no cover - the image always ships the payload
+    _hook = None
+    print("[app] hook payload unavailable; using the fallback classifier")
+
+
+# Mirrors the blocking half of claude_light_hook.is_idle_notification. It only
+# runs if that import failed, which the image should make impossible - but the
+# degraded path silently turning idle sessions amber is the exact bug the
+# classifier exists to stop, so it must not be the fallback's behaviour.
+_BLOCKING_TYPES = frozenset((
+    "permission_prompt", "elicitation_dialog",
+    "elicitation_url_dialog", "agent_needs_input",
+))
+_BLOCKING_HINTS = ("needs your permission", "permission to use",
+                   "wants to run", "wants to use")
+
+
+def _fallback_is_idle(payload: Dict[str, Any]) -> bool:
+    kind = str(payload.get("notification_type") or "").strip().lower()
+    if kind in _BLOCKING_TYPES:
+        return False
+    low = str(payload.get("message") or "").lower()
+    return not any(hint in low for hint in _BLOCKING_HINTS)
+
 
 def live_sessions() -> Optional[Dict[str, Dict[str, Any]]]:
     """Sessions Claude Code itself currently lists as running, by id.
@@ -165,6 +195,9 @@ class Event(BaseModel):
     hwnd: Optional[int] = None
     detail: Optional[str] = None
     tool: Optional[str] = None
+    # True when a Notification is the "been sitting idle" kind rather than
+    # Claude actually being blocked on you.
+    idle: Optional[bool] = False
     # Token accounting, measured host-side by the hook: the transcript lives on
     # the host filesystem and this server runs in a container.
     usage: Optional[Dict[str, Any]] = None
@@ -208,6 +241,16 @@ class Store:
     def apply(self, ev: Event) -> None:
         now = time.time()
         state = EVENT_STATE.get(ev.event, "red")
+
+        # An idle notification says nothing new about what the session is
+        # doing, so it must not repaint the lamp. A finished session stays
+        # green instead of turning amber a minute later.
+        existing = self.sessions.get(ev.session_id)
+        if ev.event == "Notification" and ev.idle:
+            if existing is None:
+                state = "green"
+            else:
+                state = existing["state"]
 
         if state is None:
             self.sessions.pop(ev.session_id, None)
@@ -431,13 +474,14 @@ async def post_hook(event: str, request: Request) -> Dict[str, Any]:
 
     tool = ""
     detail = ""
+    idle = False
     if event == "Notification":
-        msg = str(payload.get("message") or "")
-        if msg.startswith("Claude "):
-            msg = msg[len("Claude "):]
-        msg = msg.replace("needs your permission to use ", "needs permission: ")
-        msg = msg.replace("is waiting for your input", "waiting for input")
-        detail = msg[:120]
+        if _hook is not None:
+            idle = _hook.is_idle_notification(payload)
+            detail = _hook.notification_detail(payload)
+        else:
+            idle = _fallback_is_idle(payload)
+            detail = str(payload.get("message") or "")[:120]
     elif event == "PreToolUse":
         tool = str(payload.get("tool_name") or "")[:40]
         detail = tool
@@ -455,6 +499,7 @@ async def post_hook(event: str, request: Request) -> Dict[str, Any]:
         project=project,
         detail=detail,
         tool=tool,
+        idle=idle,
         usage=usage,
     ))
     return {"ok": True, "state": store.sessions.get(session_id, {}).get("state")}

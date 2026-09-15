@@ -153,6 +153,31 @@ def test_the_high_contrast_theme_separates_the_lamps_by_brightness():
                "(%.2f vs %.2f)" % (i, j, lums[i], lums[j]))
 
 
+def _mix(a, b, t):
+    """The same blend panel.py draws fades with."""
+    out = "#"
+    for i in (1, 3, 5):
+        va, vb = int(a[i:i + 2], 16), int(b[i:i + 2], 16)
+        out += "%02x" % int(round(va + (vb - va) * t))
+    return out
+
+
+def test_a_banner_is_legible_against_its_own_halo():
+    """The halo doubles as the change banner's background and the lit colour is
+    the text drawn on it, so a theme can define a perfectly good lamp and still
+    produce a banner nobody can read."""
+    for name in themes.ORDER:
+        t = themes.get(name)
+        for lamp in ("red", "orange", "green"):
+            lit, halo = t["lights"][lamp]
+            # draw_banner fills with mix(bg, halo, 0.85) and writes in `lit`.
+            background = _mix(t["bg"], halo, 0.85)
+            gap = abs(_luminance(lit) - _luminance(background))
+            ok(gap > 0.15,
+               "%s: the %s banner writes %s on %s - only %.2f apart"
+               % (name, lamp, lit, background, gap))
+
+
 def test_a_renamed_theme_still_resolves():
     """An existing panel.json may still name a theme that has been renamed."""
     eq(themes.resolve("colourblind"), "contrast", "old name should map over")

@@ -272,10 +272,6 @@ def main(argv=None, command_base=None, source_dir=None):
         print("Nothing to remove: " + SETTINGS + " does not exist.")
         return 0
 
-    b = backup()
-    if b:
-        print("Backed up settings to " + b)
-
     settings = strip_ours(settings)
     if not args.remove:
         if command_base is None:
@@ -285,10 +281,29 @@ def main(argv=None, command_base=None, source_dir=None):
             stage_payload(source_dir=source_dir)
         settings = add_ours(settings, command_base)
 
+    desired = json.dumps(settings, indent=2) + "\n"
+
+    # `docker compose up` runs this on every start, and it is normally a no-op:
+    # the same entries come out the far side. Writing anyway rewrote the user's
+    # settings.json and dropped another timestamped backup beside it every
+    # time, which is how a home directory ends up with dozens of them.
+    try:
+        with open(SETTINGS, "r", encoding="utf-8") as fh:
+            unchanged = fh.read() == desired
+    except OSError:
+        unchanged = False
+    if unchanged:
+        print(("Hooks already registered in " if not args.remove
+               else "No traffic light hooks in ") + SETTINGS + " - unchanged.")
+        return 0
+
+    b = backup()
+    if b:
+        print("Backed up settings to " + b)
+
     os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
     with open(SETTINGS, "w", encoding="utf-8") as fh:
-        json.dump(settings, fh, indent=2)
-        fh.write("\n")
+        fh.write(desired)
 
     action = "Removed" if args.remove else "Installed"
     print(action + " traffic light hooks in " + SETTINGS)

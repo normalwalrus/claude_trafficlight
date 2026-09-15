@@ -117,9 +117,16 @@ Host                                Docker
 | `SessionStart`     | green  | fresh session                              |
 | `UserPromptSubmit` | red    | you sent a prompt                          |
 | `PreToolUse`       | red    | running tools                              |
-| `Notification`     | orange | needs permission, asked a question, or idle |
+| `Notification`     | orange | needs permission, or asked you a question   |
 | `Stop`             | green  | turn complete                              |
 | `SessionEnd`       | —      | row removed                                |
+
+Claude Code fires `Notification` for twelve different things, and only four of
+them mean it is blocked on you. The rest — it has been idle a minute, you
+logged in, a background agent finished, a usage limit resumed — leave the lamp
+exactly as it was, so a session that has finished stays green instead of going
+amber a minute later with nothing running. The `notification_type` field is
+what decides; the message text is only consulted on builds too old to send one.
 
 **Every running session is shown, and rows never time out.** Claude Code keeps
 a registry of live sessions in `~/.claude/sessions/`, which the container

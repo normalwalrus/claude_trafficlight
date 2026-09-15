@@ -198,6 +198,93 @@ def test_notification_messages_are_rewritten_short():
     eq(len(_Collector.received[-1]["detail"]), 120, "detail must be truncated")
 
 
+def test_notification_type_decides_whether_claude_is_blocked_on_you():
+    """Claude Code fires Notification for twelve different things and only four
+    of them mean "waiting on you". Treating the rest as amber is what left the
+    panel orange with nothing running - so the kind, not the prose, decides."""
+    blocked = ["permission_prompt", "elicitation_dialog",
+               "elicitation_url_dialog", "agent_needs_input"]
+    passive = ["idle_prompt", "auth_success", "agent_completed",
+               "elicitation_complete", "elicitation_response",
+               "quota_auto_resume_fired", "quota_auto_resume_stale",
+               "quota_auto_resume_disabled"]
+    for kind in blocked:
+        ok(not hook.is_idle_notification({"notification_type": kind}),
+           "%s means Claude is blocked on you" % kind)
+    for kind in passive:
+        ok(hook.is_idle_notification({"notification_type": kind}),
+           "%s says nothing about the session; the lamp must not move" % kind)
+    # A type we have never heard of, with nothing else to go on, is not a
+    # reason to claim you are needed. (If its message looks like a permission
+    # prompt the message wins - see the unrecognised-type test below.)
+    ok(hook.is_idle_notification({"notification_type": "something_new"}))
+    # ...and the type wins over whatever the message happens to say.
+    ok(not hook.is_idle_notification(
+        {"notification_type": "permission_prompt",
+         "message": "Claude Code is idle. Idle message: x"}))
+
+
+def test_the_message_fallback_never_mistakes_a_permission_prompt_for_idle():
+    """Older builds send no notification_type. A bare "idle" substring also
+    matches the tool call summary in "Bash wants to run: npm run idle-check",
+    and reading that as idle means never lighting up when Claude really is
+    waiting on you - the worse of the two failures."""
+    for msg in [
+        "Claude needs your permission to use Bash",
+        "Claude needs your permission to use the Write tool",
+        "Bash wants to run: rm -rf /tmp",                  # current phrasing
+        "Bash wants to run: npm run idle-check",           # 'idle' in the command
+        "Read wants to run: src/idle.ts",
+        "Edit wants to use middleware/idle.js",
+    ]:
+        ok(not hook.is_idle_notification({"message": msg}),
+           "must stay blocking: %r" % msg)
+    for msg in [
+        "Claude Code is idle. Idle message: still there?",
+        "Claude is waiting for your input",
+        "Claude Code is waiting for input",
+    ]:
+        ok(hook.is_idle_notification({"message": msg}),
+           "must be treated as idle: %r" % msg)
+    # Nothing to go on at all: stay amber rather than silently swallow a prompt.
+    ok(not hook.is_idle_notification({}))
+    ok(not hook.is_idle_notification({"message": ""}))
+    ok(not hook.is_idle_notification("not a dict"))
+
+
+def test_the_idle_flag_reaches_the_server():
+    collector()
+    run_hook(["Notification"], payload(
+        hook_event_name="Notification", notification_type="idle_prompt",
+        message="Claude Code is idle. Idle message: still there?"))
+    eq(_Collector.received[-1]["idle"], True, "idle notification")
+
+    run_hook(["Notification"], payload(
+        hook_event_name="Notification", notification_type="permission_prompt",
+        message="Bash wants to run: npm run idle-check"))
+    eq(_Collector.received[-1]["idle"], False, "permission prompt")
+
+    run_hook(["Stop"], payload(hook_event_name="Stop"))
+    eq(_Collector.received[-1]["idle"], False, "non-notification events")
+
+
+def test_the_current_permission_wording_is_shortened_too():
+    """The row has space for the tool name, not the whole command line."""
+    eq(hook.notification_detail({"message": "Bash wants to run: rm -rf /tmp"}),
+       "needs permission: Bash")
+    eq(hook.notification_detail({"message": "Edit wants to use foo.py"}),
+       "needs permission: Edit")
+    eq(hook.notification_detail(
+        {"message": "Claude needs your permission to use Bash"}),
+       "needs permission: Bash")
+    eq(hook.notification_detail({"message": "Claude is waiting for your input"}),
+       "waiting for input")
+    # A sentence that merely contains the words is left alone, not mangled.
+    eq(hook.notification_detail({"message": "Authentication successful for you"}),
+       "Authentication successful for you")
+    eq(len(hook.notification_detail({"message": "q" * 500})), 120)
+
+
 def test_pre_tool_use_detail_is_bounded():
     collector()
     run_hook(["PreToolUse"], payload(hook_event_name="PreToolUse", tool_name="T" * 300))
@@ -329,3 +416,32 @@ def test_find_terminal_never_returns_the_desktop():
         raise Skip("no windowed ancestor in this environment")
     name = winutil.process_parents().get(pid, (0, ""))[1]
     ok(name not in hook.STOP_AT, "resolved to a shell/desktop process: %r" % name)
+
+
+def test_an_unrecognised_notification_type_is_decided_by_the_message():
+    """Failing to light up while Claude is genuinely blocked is the one failure
+    this exists to prevent, so an unknown type must not be assumed harmless."""
+    import claude_light_hook as H
+
+    blocking = {"notification_type": "some_future_prompt",
+                "message": "Bash wants to run: npm test"}
+    ok(not H.is_idle_notification(blocking),
+       "an unknown type with a permission message must still light amber")
+
+    quiet = {"notification_type": "some_future_thing",
+             "message": "Claude is idle"}
+    ok(H.is_idle_notification(quiet),
+       "an unknown type with an idle message stays quiet")
+
+    known_block = {"notification_type": "permission_prompt", "message": "anything"}
+    ok(not H.is_idle_notification(known_block), "documented blocking type")
+
+    known_quiet = {"notification_type": "auth_success",
+                   "message": "Bash wants to run: x"}
+    ok(H.is_idle_notification(known_quiet),
+       "a documented quiet type wins over a misleading message")
+
+    ok(not H.is_idle_notification({"message": "Edit wants to use the file"}),
+       "no type at all: the message decides")
+    ok(H.is_idle_notification({"message": "Claude is waiting for your input"}),
+       "no type at all: idle message")

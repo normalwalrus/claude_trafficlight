@@ -18,6 +18,41 @@ TIMEOUT = 1.0
 SERVER = os.environ.get("CLAUDE_LIGHT_URL", "http://127.0.0.1:8787").rstrip("/")
 CACHE_DIR = os.path.join(tempfile.gettempdir(), "claude-trafficlight")
 
+# Claude Code tags every Notification with its kind. Only some of them mean
+# "Claude is blocked on you"; idle, authentication, quota and agent-finished
+# notifications say nothing about what the session is doing, and repainting the
+# lamp for those is what left sessions sitting amber with nothing running.
+BLOCKING_NOTIFICATIONS = frozenset((
+    "permission_prompt",
+    "elicitation_dialog",
+    "elicitation_url_dialog",
+    "agent_needs_input",
+))
+
+# Older builds send no notification_type, so the message is all there is. Both
+# tests are anchored on purpose: a bare "idle" also matches the tool call
+# summary in "Bash wants to run: npm run idle-check", and reading a permission
+# prompt as idle means never lighting up when Claude is genuinely waiting.
+# The documented types that plainly do not want anything from you. Anything
+# outside both sets is decided by the message.
+IDLE_NOTIFICATIONS = frozenset((
+    "idle_prompt",
+    "auth_success",
+    "agent_completed",
+    "elicitation_complete",
+    "elicitation_response",
+    "quota_auto_resume_fired",
+    "quota_auto_resume_stale",
+    "quota_auto_resume_disabled",
+    "quota_auto_resume_scheduled",
+    "quota_auto_resume_started",
+    "quota_auto_resume_failed",
+))
+
+BLOCKING_HINTS = ("needs your permission", "permission to use",
+                  "wants to run", "wants to use")
+IDLE_HINTS = ("is idle", "waiting for your input", "waiting for input")
+
 # Walking past the shell would land on the desktop itself; keep this in step
 # with panel/winutil.py.
 STOP_AT = {
@@ -29,6 +64,52 @@ STOP_AT = {
     "system",
     "",
 }
+
+
+def is_idle_notification(payload: dict) -> bool:
+    """True when a Notification says nothing about the session being blocked.
+
+    The server leaves the lamp exactly as it was for these, so a finished
+    session stays green instead of turning amber a minute later. Claude Code
+    fires Notification for twelve different things and only four of them are
+    "waiting on you"; `notification_type` names which, so prefer it over
+    reading the human-readable message.
+    """
+    if not isinstance(payload, dict):
+        return False
+    kind = str(payload.get("notification_type") or "").strip().lower()
+    if kind in BLOCKING_NOTIFICATIONS:
+        return False
+    low = str(payload.get("message") or "").lower()
+    if kind and kind in IDLE_NOTIFICATIONS:
+        return True
+    # An unrecognised type still gets read: failing to light up while Claude is
+    # actually blocked is the one failure this whole thing exists to prevent,
+    # and a real permission prompt always says so in its message.
+    if any(hint in low for hint in BLOCKING_HINTS):
+        return False
+    if kind:
+        # A type we do not know, saying nothing that sounds like a request.
+        # Staying quiet beats an amber lamp with nothing behind it.
+        return True
+    # No type at all - an older build, which always sends a message.
+    return any(hint in low for hint in IDLE_HINTS)
+
+
+def notification_detail(payload: dict) -> str:
+    """The short human-readable summary shown on the row and in the banner."""
+    msg = str(payload.get("message") or "")
+    # "Claude needs your permission to use Bash" -> "needs permission: Bash"
+    if msg.startswith("Claude "):
+        msg = msg[len("Claude "):]
+    msg = msg.replace("needs your permission to use ", "needs permission: ")
+    msg = msg.replace("is waiting for your input", "waiting for input")
+    # Current builds phrase it the other way round, with the whole tool call
+    # after it: "Bash wants to run: rm -rf /tmp" -> "needs permission: Bash".
+    match = re.match(r"(.{1,40}?) wants to (?:run|use)\b", msg)
+    if match:
+        msg = "needs permission: " + match.group(1)
+    return msg[:120]
 
 
 def read_payload() -> dict:
@@ -225,14 +306,13 @@ def main() -> int:
 
     tool = ""
     detail = ""
+    idle = False
     if event == "Notification":
-        msg = str(payload.get("message") or "")
-        # "Claude needs your permission to use Bash" -> "needs permission: Bash"
-        if msg.startswith("Claude "):
-            msg = msg[len("Claude "):]
-        msg = msg.replace("needs your permission to use ", "needs permission: ")
-        msg = msg.replace("is waiting for your input", "waiting for input")
-        detail = msg[:120]
+        # Claude Code fires a Notification when it is blocked on you, but also
+        # when it has merely been idle a minute, on a successful login, when a
+        # background agent finishes... Only the first means "needs you".
+        idle = is_idle_notification(payload)
+        detail = notification_detail(payload)
     elif event == "PreToolUse":
         tool = str(payload.get("tool_name") or "")[:40]
         detail = tool
@@ -250,6 +330,7 @@ def main() -> int:
         "hwnd": hwnd,
         "detail": detail,
         "tool": tool,
+        "idle": idle,
         "usage": usage,
     }
 

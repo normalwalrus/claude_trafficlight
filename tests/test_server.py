@@ -334,6 +334,70 @@ def test_concurrent_posts_do_not_lose_or_corrupt_sessions():
     ).read()
 
 
+# --- idle notifications ------------------------------------------------------
+
+
+def test_an_idle_notification_leaves_the_lamp_alone():
+    """Claude Code fires Notification when it has merely been sitting idle for
+    a minute. Painting that amber left finished sessions claiming they needed
+    you with nothing running."""
+    st = fresh()
+    st.apply(_ev(session_id="a", event="Stop"))
+    since = st.sessions["a"]["since"]
+    st.apply(_ev(session_id="a", event="Notification", idle=True,
+                 detail="waiting for input"))
+    eq(st.sessions["a"]["state"], "green", "an idle notification must not repaint")
+    eq(st.sessions["a"]["since"], since, "nor restart the timer")
+
+    st.apply(_ev(session_id="a", event="PreToolUse"))
+    eq(st.sessions["a"]["state"], "red")
+    red_since = st.sessions["a"]["since"]
+    st.apply(_ev(session_id="a", event="Notification", idle=True))
+    eq(st.sessions["a"]["state"], "red", "a working session stays working")
+    eq(st.sessions["a"]["since"], red_since)
+
+    # ...but a real one still does its job.
+    st.apply(_ev(session_id="a", event="Notification", idle=False,
+                 detail="needs permission: Bash"))
+    eq(st.sessions["a"]["state"], "orange")
+
+    # An idle notification for a session we have never seen has to land
+    # somewhere; green is the honest default.
+    st.apply(_ev(session_id="ghost", event="Notification", idle=True))
+    eq(st.sessions["ghost"]["state"], "green")
+
+
+def test_the_curl_fallback_classifies_notifications_too():
+    """A host with Docker but no Python posts the raw payload to /hook, so that
+    path has to reach the same verdict as the full host-side hook - otherwise
+    exactly the machines the fallback exists for keep the bug."""
+    base = _live_server()
+
+    def hook(sid, **payload):
+        payload.setdefault("session_id", sid)
+        payload.setdefault("hook_event_name", payload.get("event", "Notification"))
+        req = urllib.request.Request(
+            base + "/hook/" + payload["hook_event_name"],
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read())
+
+    sid = "curl-idle"
+    eq(hook(sid, hook_event_name="Stop")["state"], "green", "finished")
+    eq(hook(sid, notification_type="idle_prompt",
+            message="Claude Code is idle. Idle message: x")["state"], "green",
+       "an idle notification must leave a finished session green")
+    eq(hook(sid, notification_type="permission_prompt",
+            message="Bash wants to run: rm -rf /tmp")["state"], "orange",
+       "a permission prompt still lights it up")
+    snap = _srv().store.sessions[sid]
+    eq(snap["detail"], "needs permission: Bash", "detail shortened the same way")
+    urllib.request.urlopen(
+        urllib.request.Request(base + "/sessions/" + sid, method="DELETE"),
+        timeout=5).read()
+
+
 # --- liveness ----------------------------------------------------------------
 
 
@@ -556,4 +620,32 @@ def test_adoption_never_overwrites_a_session_we_heard_from():
            "a session we heard from is not an adopted one")
     finally:
         app.HOST_CLAUDE = saved
+        app.store.sessions.clear()
+
+
+def test_the_fallback_classifier_holds_if_the_hook_payload_is_missing():
+    """The image always ships the hook payload, but if that import ever fails
+    the degraded path must not go back to turning idle sessions amber."""
+    app = _srv()
+    saved = app._hook
+    app._hook = None
+    try:
+        ok(app._fallback_is_idle({"message": "Claude is waiting for your input"}),
+           "idle message")
+        ok(app._fallback_is_idle({"notification_type": "auth_success"}),
+           "a type that wants nothing")
+        ok(not app._fallback_is_idle({"notification_type": "permission_prompt"}),
+           "a documented blocking type")
+        ok(not app._fallback_is_idle({"message": "Bash wants to run: npm test"}),
+           "a permission message still blocks")
+
+        app.store.sessions.clear()
+        app.store.apply(app.Event(session_id="fb", event="Stop", project="fb"))
+        eq(app.store.sessions["fb"]["state"], "green")
+        app.store.apply(app.Event(session_id="fb", event="Notification",
+                                  project="fb", idle=True))
+        eq(app.store.sessions["fb"]["state"], "green",
+           "an idle notification must not repaint a finished session")
+    finally:
+        app._hook = saved
         app.store.sessions.clear()

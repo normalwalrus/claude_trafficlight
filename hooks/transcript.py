@@ -46,6 +46,8 @@ EMPTY = {
     "tokens_cache_write": 0,
     "tokens_cache_read": 0,
     "turns": 0,
+    "turn_marks": 0,
+    "agents_turn": -1,
     "model": "",
     "model_id": "",
     "model_name": "",
@@ -113,12 +115,24 @@ def _limit_for(observed_max, model_id, fallback_model=""):
     return LARGE_LIMIT if observed_max > UPGRADE_AT else DEFAULT_LIMIT
 
 
+# How many completed turns an agent count stays trustworthy for.
+#
+# Measured in `turn_marks`, not `turns`: `turns` counts assistant *messages*
+# and a single turn contains dozens of them, so comparing against it declared
+# every live count stale within seconds of it being written.
+AGENTS_FRESH_TURNS = 2
+
+
 def _finalise(state):
     """Stamp the inferred limit and return only the public fields."""
     state["context_limit"] = _limit_for(
         state["context_tokens"], state.get("model_id", ""), state["model"]
     )
-    return {k: state[k] for k in EMPTY}
+    result = {k: state[k] for k in EMPTY}
+    seen = state.get("agents_turn", -1)
+    if seen < 0 or state["turn_marks"] - seen > AGENTS_FRESH_TURNS:
+        result["agents"] = 0        # too old to mean anything
+    return result
 
 
 def _apply_line(line, state):
@@ -129,10 +143,24 @@ def _apply_line(line, state):
     if not isinstance(entry, dict):
         return
 
-    # Background agents: Claude Code reports the live count on system lines.
+    # A "turn_duration" system line is written once at the end of every turn,
+    # which makes it the only reliable turn counter in here.
+    turn_end = (entry.get("type") == "system"
+                and entry.get("subtype") == "turn_duration")
+    if turn_end:
+        state["turn_marks"] += 1
+
+    # Background agents: Claude Code reports the live count on the turn footer,
+    # and omits the field entirely rather than writing a 0 when none are
+    # pending - so a footer without it is a positive statement that there are
+    # none, and anything older than a couple of turns is not worth trusting.
     count = entry.get("pendingBackgroundAgentCount")
-    if isinstance(count, int):
+    if isinstance(count, int) and count >= 0:
         state["agents"] = count
+        state["agents_turn"] = state["turn_marks"]
+    elif turn_end:
+        state["agents"] = 0
+        state["agents_turn"] = state["turn_marks"]
 
     # The authoritative model id lives on a "model" attachment line. The
     # assistant lines carry a marketing-ish id ("claude-opus-5") that drops the

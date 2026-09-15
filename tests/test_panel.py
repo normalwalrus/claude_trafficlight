@@ -454,6 +454,42 @@ def test_the_detail_shows_context_and_token_figures():
     p.toggle_expanded(p.sessions[0])
 
 
+def test_the_detail_panel_fits_at_every_scale():
+    """The detail height and the Focus button scale with the size slider, so
+    the text inside has to as well. On fixed pixel steps it ran straight into
+    the button below 100%: at 75% the token line and the model line both sat
+    on top of it."""
+    p = panel()
+    was = p.scale
+    try:
+        for pct in (75, 85, 100, 125, 150):
+            p.scale = pct / 100.0
+            p.rescale()
+            p.expanded.clear()
+            p.settings_open = False
+            p.on_snapshot(snapshot([session(0, state="red", tool="Bash",
+                                            usage=USAGE)]))
+            p.toggle_expanded(p.sessions[0])
+            button = [b for b in p.button_hitboxes if b[4] == "focus"][0]
+            bx0, by0, bx1, by1 = button[:4]
+            for item in p.canvas.find_all():
+                if p.canvas.type(item) != "text":
+                    continue
+                text = p.canvas.itemcget(item, "text")
+                if text == "Focus window":
+                    continue
+                x0, y0, x1, y1 = p.canvas.bbox(item)
+                ok(not (x0 < bx1 and x1 > bx0 and y0 < by1 and y1 > by0),
+                   "at %d%% %r overlaps the Focus button" % (pct, text))
+            ok(by1 <= p.row_hitboxes[0][1] + p.RH + p.DH,
+               "at %d%% the button escapes the detail panel" % pct)
+            p.toggle_expanded(p.sessions[0])
+    finally:
+        p.scale = was
+        p.rescale()
+        p.draw()
+
+
 def test_the_detail_offers_a_focus_button():
     p = panel()
     p.expanded.clear()
@@ -913,6 +949,68 @@ def test_a_newer_change_supersedes_an_armed_chime():
         eq(played, [], "a superseded chime must not sound")
         p.fire_chime("s0", "orange")
         eq(played, ["orange"], "the current one still does")
+    finally:
+        chime.play = original
+        p._chime_armed.clear()
+
+
+def test_a_rearmed_chime_waits_out_its_own_delay():
+    """red -> green -> red -> green inside the delay window. The first green's
+    timer must not fire for the second one: it would sound 700ms after a green
+    that has already been and gone, so a flicker still gets a ding."""
+    import chime
+    p = panel()
+    played, original = _capture_chimes(p)
+    p.seen_first_snapshot = True
+    p.sounds = True
+    try:
+        p.prev_state = {"s0": "red"}
+        p.on_snapshot(snapshot([session(0, state="green")]))
+        first = p._chime_armed["s0"][1]
+
+        p.on_snapshot(snapshot([session(0, state="red")]))
+        p.on_snapshot(snapshot([session(0, state="green")]))
+        second = p._chime_armed["s0"][1]
+        ok(second != first, "re-arming must issue a new token")
+
+        # The first green's timer comes due; the state name still matches, so
+        # only the token can tell it is not the arming it was scheduled for.
+        p.fire_chime("s0", "green", first)
+        eq(played, [], "the superseded timer must not sound")
+
+        p.fire_chime("s0", "green", second)
+        eq(played, ["green"], "the current one sounds exactly once")
+        p.fire_chime("s0", "green", second)
+        eq(played, ["green"], "and cannot be fired twice")
+    finally:
+        chime.play = original
+        p._chime_armed.clear()
+
+
+def test_a_burst_of_flicker_makes_one_sound_not_five():
+    """red->green->red->green->red, then it settles green. Only the state that
+    lasts is worth a sound."""
+    import chime
+    p = panel()
+    played, original = _capture_chimes(p)
+    p.seen_first_snapshot = True
+    p.sounds = True
+    try:
+        p.prev_state = {"s0": "red"}
+        tokens = []
+        for state in ("green", "red", "green", "red", "green"):
+            p.on_snapshot(snapshot([session(0, state=state)]))
+            armed = p._chime_armed.get("s0")
+            if armed:
+                tokens.append((armed[0], armed[1]))
+        # Every timer that was ever scheduled comes due, oldest first.
+        seen = set()
+        for state, token in tokens:
+            if token in seen:
+                continue
+            seen.add(token)
+            p.fire_chime("s0", state, token)
+        eq(played, ["green"], "one sound for the green that stuck: %r" % played)
     finally:
         chime.play = original
         p._chime_armed.clear()

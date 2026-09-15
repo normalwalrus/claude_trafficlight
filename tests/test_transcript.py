@@ -155,12 +155,63 @@ def test_a_half_written_final_line_is_not_consumed():
     eq(T.scan(path, sid)["tokens_out"], 15, "consumed once it is complete")
 
 
+def _turn_end(agents=None):
+    """The per-turn footer Claude Code writes; it carries the agent count only
+    when something is actually pending."""
+    line = {"type": "system", "subtype": "turn_duration", "durationMs": 1}
+    if agents is not None:
+        line["pendingBackgroundAgentCount"] = agents
+    return line
+
+
 def test_background_agent_count_is_tracked():
     path = _write([
         {"type": "system", "pendingBackgroundAgentCount": 2},
         _assistant(out=1),
     ])
     eq(T.scan(path, _fresh("agents"))["agents"], 2, "agent count")
+
+
+def test_a_live_agent_count_survives_a_long_turn():
+    """The count goes stale in *turns*, and one turn is dozens of assistant
+    messages - a real transcript here ran 28 of them between two turn footers.
+    Measuring staleness against those messages reported every live agent as
+    gone within seconds, which silently disabled both the badge and the chime
+    gate that stops a session announcing it has finished while an agent runs."""
+    path = _write([_turn_end(1)] + [_assistant(out=1) for _ in range(30)])
+    eq(T.scan(path, _fresh("agents-long"))["agents"], 1,
+       "an agent pending at the last turn boundary is still pending")
+
+
+def test_a_turn_that_reports_no_agents_clears_the_count():
+    """Claude Code omits the field rather than writing a 0, so a turn footer
+    without it is a positive statement that none are pending."""
+    path = _write([_turn_end(2), _assistant(out=1)])
+    sid = _fresh("agents-clear")
+    eq(T.scan(path, sid)["agents"], 2, "pending")
+    _append(path, [_assistant(out=1), _turn_end(), _assistant(out=1)])
+    eq(T.scan(path, sid)["agents"], 0, "the next turn says there are none left")
+
+
+def test_an_agent_count_goes_stale_after_a_few_turns():
+    path = _write([_turn_end(3), _assistant(out=1)])
+    sid = _fresh("agents-stale")
+    eq(T.scan(path, sid)["agents"], 3, "fresh")
+    # Turn footers that carry no count at all - an older build that simply
+    # stopped reporting. The reading must not be trusted forever.
+    for turn in range(T.AGENTS_FRESH_TURNS + 1):
+        _append(path, [{"type": "system", "subtype": "turn_duration"},
+                       _assistant(out=1)])
+    eq(T.scan(path, sid)["agents"], 0, "too old to mean anything")
+
+
+def test_the_agent_count_survives_an_incremental_scan():
+    path = _write([_turn_end(1), _assistant(out=1)])
+    sid = _fresh("agents-incr")
+    eq(T.scan(path, sid)["agents"], 1, "first scan")
+    _append(path, [_assistant(out=1)])
+    eq(T.scan(path, sid)["agents"], 1,
+       "a later scan with no new footer keeps the last reading")
 
 
 def test_garbage_and_missing_files_never_raise():

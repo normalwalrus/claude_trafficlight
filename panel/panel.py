@@ -323,7 +323,8 @@ class Panel:
         self.anim = {}          # sid -> (from_state, to_state, started)
         self.banners = {}       # sid -> (text, state, started)
         self.prev_since = {}    # sid -> when the previous state began
-        self._chime_armed = {}  # sid -> (state, armed at) awaiting confirmation
+        self._chime_armed = {}  # sid -> (state, token) awaiting confirmation
+        self._chime_token = 0   # so a superseded timer cannot fire early
         self.collapsed = bool(self.cfg.get("collapsed", False))
         self._frame_job = None
         self.settings_open = False
@@ -568,13 +569,22 @@ class Panel:
         """
         if not self.sounds:
             return
-        self._chime_armed[sid] = (state, time.time())
-        self.root.after(CHIME_DELAY_MS, lambda: self.fire_chime(sid, state))
+        # The token is what makes re-arming exact. Comparing the state alone
+        # lets the timer from a green that has already been and gone fire for a
+        # *later* green, well before that one has lasted the delay - which is
+        # the flicker this whole mechanism exists to swallow.
+        self._chime_token += 1
+        token = self._chime_token
+        self._chime_armed[sid] = (state, token)
+        self.root.after(CHIME_DELAY_MS, lambda: self.fire_chime(sid, state, token))
+        return token
 
-    def fire_chime(self, sid, state):
+    def fire_chime(self, sid, state, token=None):
         armed = self._chime_armed.get(sid)
         if not armed or armed[0] != state:
             return                      # superseded by a newer change
+        if token is not None and armed[1] != token:
+            return                      # re-armed since; that timer will do it
         self._chime_armed.pop(sid, None)
         if not self.sounds:
             return
@@ -789,11 +799,11 @@ class Panel:
                               text="⚙" + str(agents),
                               fill=self.BADGE_FG, font=self.f(7))
         c.create_text(
-            self.W - 26, cy, anchor="e", text=stamp,
+            self.W - int(26 * self.scale), cy, anchor="e", text=stamp,
             fill=mix(self.FG_DIM, self.BG, fade), font=self.fm(8)
         )
         c.create_text(
-            self.W - 13,
+            self.W - int(13 * self.scale),
             cy,
             anchor="center",
             text="▾" if expanded else "▸",
@@ -1067,12 +1077,19 @@ class Panel:
         if not isinstance(usage, dict):
             usage = {}
 
+        # Every offset in here is scaled. self.DH and the Focus button already
+        # were, so leaving the text on fixed pixel steps ran it straight into
+        # the button below 100%.
+        sc = self.scale
+        pad = int(14 * sc)
+
         c.create_rectangle(
             1, top, self.W - 2, top + self.DH, fill=self.DETAIL_BG, outline=""
         )
-        c.create_line(12, top, self.W - 12, top, fill=self.BORDER)
+        c.create_line(int(12 * sc), top, self.W - int(12 * sc), top,
+                      fill=self.BORDER)
 
-        y = top + 13
+        y = top + int(13 * sc)
         state = s.get("state", "green")
 
         # what it is doing right now
@@ -1085,12 +1102,12 @@ class Panel:
         else:
             activity = "Idle"
         c.create_text(
-            14, y, anchor="w", text=activity[:34], fill=self.FG, font=self.f(8)
+            pad, y, anchor="w", text=activity[:34], fill=self.FG, font=self.f(8)
         )
         agents = as_int(usage.get("agents"))
         if agents:
             c.create_text(
-                self.W - 14,
+                self.W - pad,
                 y,
                 anchor="e",
                 text=str(agents) + " agent" + ("" if agents == 1 else "s"),
@@ -1098,13 +1115,13 @@ class Panel:
                 font=self.f(8),
             )
 
-        y += 18
+        y += int(18 * sc)
         limit = as_int(usage.get("context_limit"))
         used = as_int(usage.get("context_tokens"))
         if limit > 0:
             frac = min(1.0, max(0.0, used / float(limit)))
             c.create_text(
-                14,
+                pad,
                 y,
                 anchor="w",
                 text="Context  " + fmt_tokens(used) + " / " + fmt_tokens(limit),
@@ -1112,28 +1129,29 @@ class Panel:
                 font=self.f(8),
             )
             c.create_text(
-                self.W - 14,
+                self.W - pad,
                 y,
                 anchor="e",
                 text="{:.0f}%".format(frac * 100),
                 fill=self.FG_DIM,
                 font=self.f(8),
             )
-            y += 14
-            bar_w = self.W - 28
+            y += int(14 * sc)
+            bar_w = self.W - 2 * pad
+            bar_h = max(3, int(5 * sc))
             colour = self.BAR_OK if frac < 0.75 else (self.BAR_WARN if frac < 0.9 else self.BAR_FULL)
             c.create_rectangle(
-                14, y, 14 + bar_w, y + 5, fill=self.BAR_BG, outline=""
+                pad, y, pad + bar_w, y + bar_h, fill=self.BAR_BG, outline=""
             )
             if frac > 0:
                 c.create_rectangle(
-                    14, y, 14 + max(2, int(bar_w * frac)), y + 5,
+                    pad, y, pad + max(2, int(bar_w * frac)), y + bar_h,
                     fill=colour, outline="",
                 )
-            y += 16
+            y += int(16 * sc)
 
             c.create_text(
-                14,
+                pad,
                 y,
                 anchor="w",
                 text="Out " + fmt_tokens(usage.get("tokens_out"))
@@ -1145,7 +1163,7 @@ class Panel:
                 fill=self.FG_DIM,
                 font=self.f(8),
             )
-            y += 16
+            y += int(16 * sc)
             bits = [str(usage.get("model_name") or usage.get("model") or "")]
             if as_int(s.get("pid")):
                 bits.append("pid " + str(as_int(s.get("pid"))))
@@ -1154,28 +1172,28 @@ class Panel:
                 bits.append(str(turns) + " turns")
             line = "  ·  ".join(b for b in bits if b)
             c.create_text(
-                14, y, anchor="w", text=line[:44], fill=self.FG_HEADER,
+                pad, y, anchor="w", text=line[:44], fill=self.FG_HEADER,
                 font=self.f(8),
             )
         else:
             # No transcript reading yet: the session predates the hook upgrade.
             c.create_text(
-                14,
+                pad,
                 y,
                 anchor="w",
                 text="No token data - restart this Claude session",
                 fill=self.FG_HEADER,
                 font=self.f(8),
             )
-            y += 16
+            y += int(16 * sc)
             cwd = str(s.get("cwd") or "")
             c.create_text(
-                14, y, anchor="w", text=cwd[-44:], fill=self.FG_HEADER,
+                pad, y, anchor="w", text=cwd[-44:], fill=self.FG_HEADER,
                 font=self.f(8),
             )
 
-        width = int(120 * self.scale)
-        self.draw_button(int(14 * self.scale), top + self.DH - int(26 * self.scale),
+        width = int(120 * sc)
+        self.draw_button(pad, top + self.DH - int(26 * sc),
                          width, "Focus window", "focus", s)
 
     def draw_button(self, x, y, w, label, action, s, h=None):

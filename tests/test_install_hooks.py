@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 from harness import eq, ok
 
@@ -178,6 +179,45 @@ def test_remove_on_a_machine_with_no_settings_file_creates_nothing():
     rc, out = run(path, "--remove")
     eq(rc, 0, out)
     eq(settings(path), None, "--remove must not conjure a settings.json")
+
+
+def test_a_reinstall_that_changes_nothing_writes_nothing():
+    """`docker compose up` runs the installer on every start and it is normally
+    a no-op. Rewriting settings.json anyway dropped another timestamped backup
+    beside it each time, which is how a home directory collects dozens of
+    them - and it touched a file the user never asked us to touch."""
+    path = home("noop", '{"model": "opus"}')
+    target = os.path.join(path, ".claude", "settings.json")
+    rc, out = run(path)
+    eq(rc, 0, out)
+    first = open(target, encoding="utf-8").read()
+    stamp = os.stat(target).st_mtime_ns
+    time.sleep(1.1)                     # backup names have one-second resolution
+
+    for i in range(3):
+        rc, out = run(path)
+        eq(rc, 0, out)
+        ok("unchanged" in out, "run %d should report a no-op: %s" % (i + 2, out))
+    eq(open(target, encoding="utf-8").read(), first, "content changed")
+    eq(os.stat(target).st_mtime_ns, stamp, "settings.json was rewritten")
+    backups = glob.glob(os.path.join(path, ".claude", "settings.json.bak-*"))
+    eq(len(backups), 1, "a no-op run left extra backups: %r" % backups)
+
+    # ...and a second --remove, with nothing left to strip, is equally inert.
+    path2 = home("noop_rm", '{"model": "opus"}')
+    run(path2)                                  # install  (writes backup 1)
+    time.sleep(1.1)
+    run(path2, "--remove")                      # remove   (writes backup 2)
+    before = open(os.path.join(path2, ".claude", "settings.json"),
+                  encoding="utf-8").read()
+    time.sleep(1.1)
+    rc, out = run(path2, "--remove")
+    eq(rc, 0, out)
+    ok("unchanged" in out, "a second --remove should be a no-op: %s" % out)
+    eq(len(glob.glob(os.path.join(path2, ".claude", "settings.json.bak-*"))), 2,
+       "a no-op removal left an extra backup")
+    eq(open(os.path.join(path2, ".claude", "settings.json"),
+            encoding="utf-8").read(), before)
 
 
 def test_a_backup_is_written_before_any_change():

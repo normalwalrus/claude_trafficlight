@@ -128,7 +128,7 @@
   .head {
     position: relative;               /* the change banner overlays this */
     display: grid;
-    grid-template-columns: auto 1fr auto auto;
+    grid-template-columns: auto 1fr auto auto auto;
     align-items: center;
     gap: 14px;
   }
@@ -206,6 +206,20 @@
   li.announcing .meta,
   li.announcing .time,
   li.announcing .chev { opacity: 0; }
+
+  /* Subagents run inside their parent session and never get a row of their
+     own, so without this there is no sign from a collapsed row that a session
+     has agents working under it. Matches the desktop panel's badge. */
+  .badge {
+    flex: none;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 5px;
+    background: var(--badge-bg, #3a2f14);
+    color: var(--badge-fg, #ffb03a);
+  }
+  .badge:empty { display: none; }
+  li.open .badge, li.announcing .badge { display: none; }
 
   .meta { flex: 1; min-width: 0; }
   .name {
@@ -335,6 +349,7 @@
   let prevState = new Map();
   let seenFirst = false;        // suppresses a chime storm on (re)connect
   let audio = null;
+  let pipWindow = null;         // the popped-out window, when there is one
 
   // --- alert sounds, loaded from sounds.json so the browser and the desktop
   // panel stay in step from one definition. What separates a ding from a beep
@@ -381,32 +396,45 @@
     detail_bg: "--row", settings_bg: "--settings-bg",
     menu_bg: "--menu-bg", case_bg: "--case-bg", case_edge: "--case-edge",
     bezel: "--bezel", lamp_off: "--lamp-off", lens: "--lens",
-    bar_bg: "--bar-bg",
+    bar_bg: "--bar-bg", badge_bg: "--badge-bg", badge_fg: "--badge-fg",
   };
+
+  // The theme lives in custom properties set on documentElement, and the
+  // popped-out window is a whole separate document with its own. Only the
+  // <style> tag is cloned into it, so painting just this one left pop out
+  // permanently on the default palette, whatever the user had chosen.
+  function themeRoots() {
+    const roots = [document.documentElement];
+    if (pipWindow && pipWindow.document) {
+      roots.push(pipWindow.document.documentElement);
+    }
+    return roots;
+  }
 
   function applyTheme(name) {
     if (!THEMES || !THEMES.themes[name]) return;
     const t = THEMES.themes[name];
-    const root = document.documentElement;
-    for (const [token, css] of Object.entries(TOKEN_VARS)) {
-      if (t[token]) root.style.setProperty(css, t[token]);
+    for (const root of themeRoots()) {
+      for (const [token, css] of Object.entries(TOKEN_VARS)) {
+        if (t[token]) root.style.setProperty(css, t[token]);
+      }
+      // The row surface sits between the page and the detail panel.
+      root.style.setProperty("--row", t.detail_bg);
+      root.style.setProperty("--case-bg-top", t.bezel);
+      root.style.setProperty("--off", t.lamp_off);
+      for (const lamp of ["red", "orange", "green"]) {
+        const pair = t.lights && t.lights[lamp];
+        if (!pair) continue;
+        root.style.setProperty("--" + lamp, pair[0]);
+        root.style.setProperty("--" + lamp + "-halo", pair[1]);
+      }
+      // A light theme needs a dark lens rim, or the highlight vanishes.
+      root.style.setProperty("--lens-edge",
+        t.dark ? "rgba(255,255,255,.28)" : "rgba(0,0,0,.30)");
+      root.style.setProperty("--lens-edge-bright",
+        t.dark ? "rgba(255,255,255,.5)" : "rgba(0,0,0,.45)");
+      root.style.colorScheme = t.dark ? "dark" : "light";
     }
-    // The row surface sits between the page and the detail panel.
-    root.style.setProperty("--row", t.detail_bg);
-    root.style.setProperty("--case-bg-top", t.bezel);
-    root.style.setProperty("--off", t.lamp_off);
-    for (const lamp of ["red", "orange", "green"]) {
-      const pair = t.lights && t.lights[lamp];
-      if (!pair) continue;
-      root.style.setProperty("--" + lamp, pair[0]);
-      root.style.setProperty("--" + lamp + "-halo", pair[1]);
-    }
-    // A light theme needs a dark lens rim, or the highlight vanishes.
-    root.style.setProperty("--lens-edge",
-      t.dark ? "rgba(255,255,255,.28)" : "rgba(0,0,0,.30)");
-    root.style.setProperty("--lens-edge-bright",
-      t.dark ? "rgba(255,255,255,.5)" : "rgba(0,0,0,.45)");
-    root.style.colorScheme = t.dark ? "dark" : "light";
   }
 
   function fillThemePicker() {
@@ -515,6 +543,7 @@
             '<span class="signal"><i></i><i></i><i></i></span>' +
             '<span class="meta"><span class="name"></span>' +
               '<span class="sub"></span></span>' +
+            '<span class="badge"></span>' +
             '<span class="time"></span>' +
             '<span class="chev">&#9656;</span>' +
             '<div class="banner"></div>' +
@@ -534,6 +563,8 @@
       li.querySelector(".name").textContent = s.project || "claude";
       li.querySelector(".sub").textContent =
         s.state === "orange" && s.detail ? s.detail : (s.cwd || "");
+      const running = Number((s.usage || {}).agents) || 0;
+      li.querySelector(".badge").textContent = running ? "⚙" + running : "";
       const elapsed = now - (Number(s.since) || now);
       li.querySelector(".time").textContent =
         s.state === "green" && elapsed > 300 ? "idle" : fmt(elapsed);
@@ -789,7 +820,6 @@
   // --- pop out
   const panelEl = document.querySelector(".panel");
   const popoutEl = document.getElementById("popout");
-  let pipWindow = null;
 
   function stylesFor(doc) {
     // Our CSS lives in one <style> tag; clone it rather than re-fetching.
@@ -818,6 +848,7 @@
     stylesFor(pipWindow.document);
     pipWindow.document.body.classList.add("pip");
     pipWindow.document.body.appendChild(panelEl);
+    applyTheme(theme);   // the new document starts on the :root fallbacks
     pipWindow.addEventListener("pagehide", () => {
       // Put the panel back so the tab is not left empty.
       document.body.appendChild(panelEl);

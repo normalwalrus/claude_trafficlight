@@ -248,6 +248,48 @@ def test_every_sound_renders_valid_audio():
                "%s/%s clips" % (name, kind))
 
 
+def test_every_sound_is_clean_across_the_whole_volume_range():
+    """The slider is continuous, so every sound has to survive every position
+    on it - not just the one level the other cases happen to render at."""
+    for name in chime.ORDER:
+        for kind in ("green", "orange"):
+            peaks = []
+            for volume in (0, 1, 5, 25, 50, 75, 99, 100):
+                data = chime._wav(kind, volume, name)
+                s = _samples(data)
+                where = "%s/%s at %d" % (name, kind, volume)
+                eq(data[:4], b"RIFF", where + " not RIFF")
+                ok(not any(v <= -32768 or v >= 32767 for v in s), where + " clips")
+                peak = max(abs(v) for v in s)
+                # Buffers are cached per VOLUME_STEP, not per integer, so the
+                # rendered peak is the one for the nearest step.
+                step = int(round(volume / float(chime.VOLUME_STEP)))
+                step *= chime.VOLUME_STEP
+                want = chime.amplitude_for(step) * 32767
+                ok(abs(peak - want) <= 2, "%s peak %d, want ~%d" % (where, peak, want))
+                peaks.append(peak)
+            eq(peaks[0], 0, "%s/%s at 0 must be pure silence" % (name, kind))
+            ok(peaks == sorted(peaks),
+               "%s/%s is not monotonic in volume: %r" % (name, kind, peaks))
+
+
+def test_muted_never_reaches_the_audio_device():
+    """0 is silence by request: it must not even be handed to the player."""
+    import desktop
+    calls = []
+    original = desktop.play_wav
+    desktop.play_wav = lambda *a, **k: calls.append(a) or True
+    try:
+        for name in chime.ORDER:
+            for kind in ("green", "orange"):
+                eq(chime.play(kind, 0, name), False, "%s/%s at 0" % (name, kind))
+        eq(calls, [], "muted playback still touched the device")
+        ok(chime.play("green", 60, chime.DEFAULT), "a real volume still plays")
+        eq(len(calls), 1)
+    finally:
+        desktop.play_wav = original
+
+
 def _samples(data):
     with wave.open(io.BytesIO(data)) as w:
         n = w.getnframes()
