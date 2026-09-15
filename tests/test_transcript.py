@@ -253,3 +253,94 @@ def test_session_ids_with_illegal_filename_characters_are_safe():
     ok(os.path.isdir(T.STATE_DIR), "state dir exists")
     for name in os.listdir(T.STATE_DIR):
         ok(os.sep not in name and "/" not in name, "state file %r stays flat" % name)
+
+
+# --- what the session is about -----------------------------------------------
+
+
+def test_the_title_and_last_prompt_are_read():
+    """Claude Code writes both itself, once per turn, so there is no need to
+    reconstruct them from the user messages - which would mean telling real
+    prompts apart from tool results, sidechains and meta lines."""
+    name = _fresh("about-1")
+    path = _write([
+        {"type": "ai-title", "aiTitle": "Ghost rows on the panel"},
+        _assistant(inp=5, out=2),
+        {"type": "last-prompt", "lastPrompt": "fix the ghost row bug"},
+    ])
+    r = T.scan(path, name)
+    eq(r["title"], "Ghost rows on the panel")
+    eq(r["prompt"], "fix the ghost row bug")
+    T.forget(name)
+
+
+def test_the_latest_of_each_wins():
+    name = _fresh("about-2")
+    path = _write([
+        {"type": "ai-title", "aiTitle": "Repository overview"},
+        {"type": "last-prompt", "lastPrompt": "first thing"},
+        {"type": "ai-title", "aiTitle": "Fixing the map"},
+        {"type": "last-prompt", "lastPrompt": "second thing"},
+    ])
+    r = T.scan(path, name)
+    eq(r["title"], "Fixing the map")
+    eq(r["prompt"], "second thing")
+    T.forget(name)
+
+
+def test_they_survive_an_incremental_scan():
+    """Only new bytes are read on each hook, so anything learned earlier has
+    to come back from the state file rather than being re-read."""
+    name = _fresh("about-3")
+    path = _write([
+        {"type": "ai-title", "aiTitle": "Ghost rows on the panel"},
+        {"type": "last-prompt", "lastPrompt": "fix the ghost row bug"},
+    ])
+    eq(T.scan(path, name)["title"], "Ghost rows on the panel")
+    _append(path, [_assistant(inp=1, out=1)])
+    again = T.scan(path, name)
+    eq(again["title"], "Ghost rows on the panel", "the title must not be lost")
+    eq(again["prompt"], "fix the ghost row bug", "nor the prompt")
+    T.forget(name)
+
+
+def test_a_multi_line_prompt_becomes_one_line():
+    name = _fresh("about-4")
+    path = _write([
+        {"type": "last-prompt",
+         "lastPrompt": "do this\n\n  and   then\tthat  "},
+    ])
+    eq(T.scan(path, name)["prompt"], "do this and then that")
+    T.forget(name)
+
+
+def test_a_very_long_prompt_is_cut():
+    name = _fresh("about-5")
+    path = _write([{"type": "last-prompt", "lastPrompt": "x" * 5000}])
+    eq(len(T.scan(path, name)["prompt"]), T.TEXT_LIMIT)
+    T.forget(name)
+
+
+def test_junk_titles_and_prompts_are_ignored():
+    name = _fresh("about-6")
+    path = _write([
+        {"type": "ai-title", "aiTitle": "Real title"},
+        {"type": "last-prompt", "lastPrompt": "real prompt"},
+        {"type": "ai-title", "aiTitle": 12},
+        {"type": "ai-title", "aiTitle": "   "},
+        {"type": "last-prompt", "lastPrompt": None},
+        {"type": "last-prompt"},
+    ])
+    r = T.scan(path, name)
+    eq(r["title"], "Real title", "a junk title must not blank a good one")
+    eq(r["prompt"], "real prompt")
+    T.forget(name)
+
+
+def test_a_session_with_neither_reports_empty_strings():
+    name = _fresh("about-7")
+    path = _write([_assistant(inp=1, out=1)])
+    r = T.scan(path, name)
+    eq(r["title"], "")
+    eq(r["prompt"], "")
+    T.forget(name)

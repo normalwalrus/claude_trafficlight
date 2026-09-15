@@ -53,7 +53,16 @@ EMPTY = {
     "model_name": "",
     "agents": 0,
     "approx": False,
+    # What the session is about, both written by Claude Code itself: a title
+    # it generates for the conversation, and the last thing you typed. Neither
+    # is reliable alone - the title is generated early and goes stale, and the
+    # last prompt is often a fragment like "carry on" - so the panel shows both.
+    "title": "",
+    "prompt": "",
 }
+
+# Enough to fill two lines on a 320px panel, with the rest cut.
+TEXT_LIMIT = 220
 
 
 def _state_path(session_id):
@@ -161,6 +170,21 @@ def _apply_line(line, state):
     elif turn_end:
         state["agents"] = 0
         state["agents_turn"] = state["turn_marks"]
+
+    # Claude Code records both of these itself, once per turn, so there is no
+    # need to reconstruct them from the user messages - which would mean
+    # telling real prompts apart from tool results, sidechains and meta lines.
+    kind = entry.get("type")
+    if kind == "ai-title":
+        title = entry.get("aiTitle")
+        if isinstance(title, str) and title.strip():
+            state["title"] = title.strip()[:TEXT_LIMIT]
+        return
+    if kind == "last-prompt":
+        prompt = entry.get("lastPrompt")
+        if isinstance(prompt, str) and prompt.strip():
+            state["prompt"] = " ".join(prompt.split())[:TEXT_LIMIT]
+        return
 
     # The authoritative model id lives on a "model" attachment line. The
     # assistant lines carry a marketing-ish id ("claude-opus-5") that drops the

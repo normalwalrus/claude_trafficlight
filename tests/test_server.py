@@ -957,3 +957,72 @@ def test_the_settings_endpoint_updates_and_publishes():
         eq(out["sound"], "deskbell", "a value no panel can play is ignored")
     finally:
         app.settings.values, app.settings.revision = saved
+
+
+# --- what a session is about -------------------------------------------------
+
+
+def test_the_title_and_prompt_become_row_fields():
+    """They ride in with the token figures because the transcript scan reads
+    them, but a panel should not have to dig through a usage dict for them."""
+    app = _srv()
+    try:
+        app.store.sessions.clear()
+        app.store.apply(app.Event(
+            session_id="a", event="Stop", project="a",
+            usage={"tokens_out": 10, "title": "Ghost rows", "prompt": "fix it"},
+        ))
+        row = app.store.sessions["a"]
+        eq(row["title"], "Ghost rows")
+        eq(row["prompt"], "fix it")
+        eq(row["usage"].get("tokens_out"), 10, "the accounting still arrives")
+        ok("title" not in row["usage"], "and is not left duplicated inside it")
+    finally:
+        app.store.sessions.clear()
+
+
+def test_a_titleless_scan_does_not_blank_the_row():
+    """A conversation Claude Code has not titled yet - or a resumed one before
+    its first prompt - reports empty strings; keep what we had."""
+    app = _srv()
+    try:
+        app.store.sessions.clear()
+        app.store.apply(app.Event(session_id="a", event="Stop", project="a",
+                                  usage={"title": "Ghost rows", "prompt": "fix it"}))
+        app.store.apply(app.Event(session_id="a", event="PreToolUse", project="a",
+                                  usage={"tokens_out": 5, "title": "", "prompt": ""}))
+        eq(app.store.sessions["a"]["title"], "Ghost rows")
+        eq(app.store.sessions["a"]["prompt"], "fix it")
+    finally:
+        app.store.sessions.clear()
+
+
+def test_splitting_a_usage_blob_is_never_fatal():
+    app = _srv()
+    for junk in [None, {}, [], "text", 5, {"title": 7}, {"prompt": ["x"]}]:
+        usage, title, prompt = app.split_usage(junk)
+        ok(isinstance(usage, dict), "usage stays a dict for %r" % (junk,))
+        eq(title, "" if not isinstance(junk, dict) or not isinstance(
+            junk.get("title"), str) else junk["title"])
+        ok(isinstance(prompt, str))
+
+
+def test_an_adopted_row_carries_what_it_is_about():
+    """A session that has never fired a hook still has a transcript, so the
+    panel can say what it is working on the moment it is adopted."""
+    app = _srv()
+    mount = _registry({"quiet": {"cwd": "/home/dev/projects/quiet"}})
+    saved = (app.HOST_CLAUDE, app.usage_from_transcript)
+    app.HOST_CLAUDE = mount
+    app.usage_from_transcript = lambda sid, path: {
+        "tokens_out": 3, "title": "Adopted title", "prompt": "adopted prompt"}
+    try:
+        _reset(app)
+        app.store.reap()
+        row = app.store.sessions.get("quiet")
+        ok(row, "adopted: %r" % app.store.sessions)
+        eq(row["title"], "Adopted title")
+        eq(row["prompt"], "adopted prompt")
+    finally:
+        app.HOST_CLAUDE, app.usage_from_transcript = saved
+        _reset(app)

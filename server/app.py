@@ -222,6 +222,21 @@ def usage_from_transcript(session_id: str, host_transcript: str):
         return None
 
 
+def split_usage(usage):
+    """Take the two "what is this session about" fields out of the usage blob.
+
+    They ride in with the token figures because the transcript scan is what
+    reads them, but they are not accounting - and a panel should not have to
+    dig through a usage dict to find out what a session is working on.
+    """
+    if not isinstance(usage, dict):
+        return {}, "", ""
+    rest = {k: v for k, v in usage.items() if k not in ("title", "prompt")}
+    title = usage.get("title") if isinstance(usage.get("title"), str) else ""
+    prompt = usage.get("prompt") if isinstance(usage.get("prompt"), str) else ""
+    return rest, title[:220], prompt[:220]
+
+
 class Event(BaseModel):
     session_id: str
     event: str
@@ -443,6 +458,8 @@ class Store:
         # id). Clear the tombstone or the row could never be adopted again.
         self.ended.pop(ev.session_id, None)
 
+        usage, title, prompt = split_usage(ev.usage)
+
         s = self.sessions.get(ev.session_id)
         if s is None:
             s = {
@@ -457,7 +474,11 @@ class Store:
                 "updated": now,
                 "detail": ev.detail or "",
                 "tool": ev.tool or "",
-                "usage": ev.usage or {},
+                "usage": usage,
+                # What the session is about: Claude Code's own title for the
+                # conversation, and the last thing you typed into it.
+                "title": title,
+                "prompt": prompt,
                 "last_event": ev.event,
             }
             self.sessions[ev.session_id] = s
@@ -482,7 +503,14 @@ class Store:
             if ev.tool is not None:
                 s["tool"] = ev.tool
             if ev.usage:
-                s["usage"] = ev.usage
+                s["usage"] = usage
+                # A conversation that has not been titled yet, or a resumed one
+                # before its first prompt, reports an empty string. Keep what we
+                # had rather than blanking the row.
+                if title:
+                    s["title"] = title
+                if prompt:
+                    s["prompt"] = prompt
 
         self.publish()
 
@@ -507,6 +535,7 @@ class Store:
             now = time.time()
             stamp = entry.get("updatedAt")
             started = stamp / 1000.0 if isinstance(stamp, (int, float)) else now
+            usage, title, prompt = split_usage(usage_from_transcript(sid, ""))
             self.sessions[sid] = {
                 "session_id": sid,
                 "project": project,
@@ -521,7 +550,9 @@ class Store:
                 "updated": now,
                 "detail": "",
                 "tool": "",
-                "usage": usage_from_transcript(sid, "") or {},
+                "usage": usage,
+                "title": title,
+                "prompt": prompt,
                 "last_event": "Adopted",
                 "adopted": True,
             }

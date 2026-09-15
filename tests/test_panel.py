@@ -641,7 +641,7 @@ def test_an_idle_panel_stops_animating():
     p.anim["y"] = ("red", "green", time.time())
     ok(p.busy(), "an animating panel is busy")
     p.anim.clear()
-    p.banners["y"] = ("done", "green", time.time())
+    p.banners["y"] = ("done", "green", time.time(), False)
     ok(p.busy(), "a visible banner keeps it busy")
     p.banners.clear()
     ok(not p.busy(), "idle again")
@@ -1160,8 +1160,9 @@ def test_a_needs_you_banner_does_not_expire():
         ok("s0" in p.banners, "armed")
 
         # well past the four seconds a "finished" banner would get
-        text, state, started = p.banners["s0"]
-        p.banners["s0"] = (text, state, time.time() - (P.BANNER_SECS * 10))
+        text, state, started, sticky = p.banners["s0"]
+        ok(sticky, "a needs-you banner is a sticky one")
+        p.banners["s0"] = (text, state, time.time() - (P.BANNER_SECS * 10), sticky)
         still = p.banner_for("s0")
         ok(still is not None, "an amber banner must not expire")
         eq(still[2], 1.0, "and must stay fully opaque")
@@ -1175,7 +1176,8 @@ def test_a_finished_banner_still_expires():
     p = panel()
     p.banners.clear()
     try:
-        p.banners["s0"] = ("finished", "green", time.time() - (P.BANNER_SECS + 1))
+        p.banners["s0"] = ("finished", "green",
+                           time.time() - (P.BANNER_SECS + 1), False)
         eq(p.banner_for("s0"), None, "a green banner is transient")
         ok("s0" not in p.banners, "and cleans itself up")
     finally:
@@ -1434,3 +1436,166 @@ def test_a_snapshot_without_settings_is_harmless():
     with_pushes(p)
     p.on_snapshot(snapshot([session(0)]))     # no settings key at all
     eq(len(p.sessions), 1, "the rows still arrive")
+
+
+# --- what the session is about ----------------------------------------------
+
+
+def test_wrap_text_breaks_on_words_and_marks_what_it_dropped():
+    eq(P.wrap_text("one two three", 20, 2), ["one two three"])
+    eq(P.wrap_text("", 20, 2), [])
+    eq(P.wrap_text(None, 20, 2), [])
+    eq(P.wrap_text("a b", 0, 2), [], "no room is not a crash")
+    eq(P.wrap_text("a b", 20, 0), [])
+    lines = P.wrap_text("the quick brown fox jumps over the lazy dog", 12, 2)
+    eq(len(lines), 2)
+    for line in lines:
+        ok(len(line) <= 12, "over the width: %r" % line)
+    ok(lines[-1].endswith("…"), "a cut line must say so: %r" % lines)
+    # a word longer than the line has to be broken somewhere
+    long = P.wrap_text("C:/aaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbb.py", 10, 3)
+    for line in long:
+        ok(len(line) <= 10, "hard break failed: %r" % long)
+
+
+def test_the_detail_says_what_the_session_is_about():
+    p = panel()
+    s = session(0, title="Ghost rows on the panel", prompt="fix the ghost row bug")
+    kinds = [k for k, _ in p.detail_lines(s)]
+    text = " ".join(t for _, t in p.detail_lines(s))
+    eq(kinds[0], "title", "the title goes above")
+    ok("Ghost rows" in text, text)
+    ok("fix the ghost row bug" in text, text)
+    ok("“" in text, "the prompt is quoted: %r" % text)
+
+
+def test_a_long_prompt_wraps_to_two_lines_and_then_stops():
+    p = panel()
+    s = session(0, title="", prompt="Sometimes the map's locations disappear "
+                                    "after clicking around, double check that "
+                                    "and then keep going for a while longer")
+    lines = [t for k, t in p.detail_lines(s) if k == "prompt"]
+    eq(len(lines), P.PROMPT_LINES, "capped at two lines: %r" % lines)
+    ok(lines[-1].endswith("…"), "and says it was cut: %r" % lines)
+
+
+def test_a_session_with_nothing_to_say_adds_no_lines():
+    p = panel()
+    eq(p.detail_lines(session(0)), [])
+    eq(p.detail_lines(session(0, title="", prompt="")), [])
+    eq(p.detail_lines("not a dict"), [])
+    eq(p.detail_height(session(0)), p.DH, "and the panel keeps its height")
+    taller = p.detail_height(session(0, title="t", prompt="p"))
+    ok(taller > p.DH, "with text it has to grow: %r vs %r" % (taller, p.DH))
+
+
+def test_the_detail_renders_without_raising():
+    p = panel()
+    p.on_snapshot(snapshot([session(0, title="A title", prompt="a prompt")]))
+    p.toggle_expanded(p.sessions[0])
+    p.draw()
+    ok(any("A title" in t for t in texts(p)), "title missing: %r" % texts(p))
+    ok(any("a prompt" in t for t in texts(p)), "prompt missing: %r" % texts(p))
+    p.expanded.clear()
+
+
+# --- a session you have left waiting ----------------------------------------
+
+
+def test_a_row_only_shouts_once_it_has_been_left_waiting():
+    p = panel()
+    now = time.time()
+    ok(not p.is_urgent(session(0, state="orange", since=now)),
+       "a prompt you answer straight away must not escalate")
+    ok(p.is_urgent(session(0, state="orange", since=now - P.URGENT_AFTER - 1)),
+       "one left hanging must")
+    for state in ("red", "green", "unknown"):
+        ok(not p.is_urgent(session(0, state=state, since=now - 9999)),
+           "%s is not waiting on you" % state)
+    ok(not p.is_urgent("not a dict"))
+    ok(not p.is_urgent(session(0, state="orange", since=0)), "no since, no shout")
+
+
+def test_a_shouting_row_is_taller_and_keeps_the_panel_animating():
+    p = panel()
+    calm = session(0, state="orange", since=time.time())
+    loud = session(1, state="orange", since=time.time() - P.URGENT_AFTER - 1)
+    eq(p.row_height(calm), p.RH)
+    ok(p.row_height(loud) > p.RH, "a shouting row grows")
+    p.on_snapshot(snapshot([loud]))
+    p.banners.clear()
+    p.anim.clear()
+    ok(p.busy(), "the breathing has to keep the frame loop running")
+    p.on_snapshot(snapshot([calm]))
+    p.banners.clear()
+    p.anim.clear()
+    ok(not p.busy(), "...and stop once nothing is waiting")
+
+
+def test_nothing_shouts_while_the_server_is_away():
+    p = panel()
+    loud = session(0, state="orange", since=time.time() - P.URGENT_AFTER - 1)
+    ok(p.is_urgent(loud))
+    p.connected = False
+    ok(not p.is_urgent(loud),
+       "a state we can no longer confirm must not be escalated")
+
+
+# --- finished while you were away -------------------------------------------
+
+
+def test_a_session_that_finishes_while_you_are_away_keeps_its_banner():
+    p = panel()
+    original = P.desktop.idle_seconds
+    try:
+        P.desktop.idle_seconds = lambda: P.AWAY_AFTER + 1
+        p.on_snapshot(snapshot([session(0, state="red")]))
+        p.on_snapshot(snapshot([session(0, state="green")]))
+        entry = p.banners.get("s0")
+        ok(entry and entry[3], "it should stay until you look: %r" % (entry,))
+        p.banners["s0"] = (entry[0], entry[1],
+                           time.time() - (P.BANNER_SECS * 10), entry[3])
+        ok(p.banner_for("s0"), "a whole minute later it is still there")
+    finally:
+        P.desktop.idle_seconds = original
+        p.banners.clear()
+
+
+def test_a_session_that_finishes_while_you_are_there_does_not():
+    p = panel()
+    original = P.desktop.idle_seconds
+    try:
+        P.desktop.idle_seconds = lambda: 2
+        p.on_snapshot(snapshot([session(0, state="red")]))
+        p.on_snapshot(snapshot([session(0, state="green")]))
+        entry = p.banners.get("s0")
+        ok(entry and not entry[3], "you watched it finish: %r" % (entry,))
+    finally:
+        P.desktop.idle_seconds = original
+        p.banners.clear()
+
+
+def test_an_unknown_idle_time_counts_as_being_here():
+    p = panel()
+    original = P.desktop.idle_seconds
+    try:
+        P.desktop.idle_seconds = lambda: None
+        ok(not p.away(), "no idle time to go on: behave exactly as before")
+    finally:
+        P.desktop.idle_seconds = original
+
+
+def test_clicking_a_row_clears_a_finished_marker_but_not_a_needs_you_one():
+    p = panel()
+    try:
+        p.on_snapshot(snapshot([session(0), session(1)]))
+        p.banners["s0"] = ("finished", "green", time.time(), True)
+        p.banners["s1"] = ("needs you", "orange", time.time(), True)
+        p.toggle_expanded(p.sessions[0])
+        ok("s0" not in p.banners, "looking at it is enough for a finished one")
+        p.toggle_expanded(p.sessions[1])
+        ok("s1" in p.banners,
+           "a needs-you banner waits until you open the session itself")
+    finally:
+        p.banners.clear()
+        p.expanded.clear()

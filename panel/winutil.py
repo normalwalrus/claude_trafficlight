@@ -253,6 +253,39 @@ def foreground_window():
         return 0
 
 
+def idle_seconds():
+    """Seconds since the last keyboard or mouse input anywhere, or None.
+
+    System-wide on purpose: the question is whether you are at the machine at
+    all, not whether you have touched this panel. Typing in your editor counts
+    as being here; a session that finishes while this is large finished while
+    you were away from the desk.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        ctypes, wintypes = _win32()
+
+        class LASTINPUTINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        info = LASTINPUTINFO()
+        info.cbSize = ctypes.sizeof(LASTINPUTINFO)
+        if not user32.GetLastInputInfo(ctypes.byref(info)):
+            return None
+        kernel32.GetTickCount64.restype = ctypes.c_ulonglong
+        ticks = int(kernel32.GetTickCount64())
+        # Both are milliseconds since boot. GetLastInputInfo is a 32-bit
+        # counter that wraps every 49 days, so a negative answer means it has
+        # wrapped and the honest reply is "no idea" rather than a huge number.
+        idle = (ticks - int(info.dwTime)) / 1000.0
+        return idle if idle >= 0 else None
+    except Exception:
+        return None
+
+
 def window_pid(hwnd):
     """The pid owning a window, or 0."""
     if sys.platform != "win32" or not hwnd:

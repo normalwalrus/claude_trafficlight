@@ -20,6 +20,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chime  # noqa: E402
 import themes  # noqa: E402
+import desktop  # noqa: E402
 from desktop import foreground_window  # noqa: E402
 from winutil import focus_session, window_title, resolve_window  # noqa: E402
 
@@ -80,6 +81,26 @@ BANNER_FADE = 0.35
 # A state has to hold this long before it is worth a sound. Anything shorter
 # was never visible on screen, so chiming for it is just noise.
 CHIME_DELAY_MS = 700
+
+# A session you have left waiting this long stops being just another amber row:
+# it grows, and its background breathes, so a glance at the panel lands on it
+# first. Silent on purpose - the chime already had its turn when it went amber.
+URGENT_AFTER = 120
+URGENT_GROW = 8           # px the row gains
+URGENT_PERIOD = 1.8       # seconds per breath
+URGENT_DEPTH = 0.40       # how far towards the amber halo it breathes
+
+# If nobody has touched the machine for this long when a session finishes, you
+# were not there to see it: the "finished" banner then stays up until you come
+# back and deal with that row, instead of fading after four seconds.
+AWAY_AFTER = 300
+
+# Characters that fit on one line of the detail panel, at any scale: the width
+# and the font size both scale together. Measured, not guessed - 292px of room
+# at an average 5.6px per character is a little over 50, and 44 leaves room for
+# a line of unusually wide ones. It matches the identity line below it.
+DETAIL_CHARS = 44
+PROMPT_LINES = 2
 
 # Settings panel, at 100% scale.
 SETTINGS_H = 134
@@ -164,6 +185,39 @@ def as_int(value, default=0):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def wrap_text(text, width, max_lines):
+    """Break text onto at most `max_lines` lines of at most `width` characters.
+
+    Wraps on spaces, hard-breaks a word too long to fit one (a path, a URL),
+    and ends the last line with an ellipsis if anything had to be dropped.
+    """
+    words = str(text or "").split()
+    if not words or width <= 0 or max_lines <= 0:
+        return []
+    lines, current = [], ""
+    for word in words:
+        while len(word) > width:
+            if current:
+                lines.append(current)
+                current = ""
+            lines.append(word[:width])
+            word = word[width:]
+        if not current:
+            current = word
+        elif len(current) + 1 + len(word) <= width:
+            current += " " + word
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    if len(lines) <= max_lines:
+        return lines
+    kept = lines[:max_lines]
+    kept[-1] = kept[-1][:max(1, width - 1)].rstrip() + "…"
+    return kept
 
 
 def fmt_elapsed(seconds):
@@ -534,6 +588,56 @@ class Panel:
         save_config(self.cfg)
         self.place_window()
 
+    # --- how tall is a row, and is it shouting -----------------------------
+
+    def is_urgent(self, s):
+        """True once a session has been waiting on you for a good while.
+
+        Only ever true for amber: red is Claude's turn, and a finished session
+        is not asking for anything.
+        """
+        if not self.connected or not isinstance(s, dict):
+            return False
+        if s.get("state") != "orange":
+            return False
+        since = as_float(s.get("since"), 0.0)
+        if not since:
+            return False
+        return (time.time() + self.clock_offset) - since >= URGENT_AFTER
+
+    def any_urgent(self):
+        return any(self.is_urgent(s) for s in self.sessions)
+
+    def row_height(self, s):
+        """Rows are not all the same height: one that has been left waiting
+        grows, so the panel reads differently from across the room."""
+        return self.RH + (int(URGENT_GROW * self.scale) if self.is_urgent(s) else 0)
+
+    def detail_lines(self, s):
+        """What this session is about, as (kind, text) lines for the detail.
+
+        Claude Code writes both itself: a title it generates for the
+        conversation, and the last thing you typed. Neither is reliable alone -
+        the title is generated early and goes stale, the last prompt is often a
+        fragment like "carry on" - so both are shown when both exist.
+        """
+        if not isinstance(s, dict):
+            return []
+        out = []
+        title = str(s.get("title") or "").strip()
+        prompt = str(s.get("prompt") or "").strip()
+        if title:
+            for line in wrap_text(title, DETAIL_CHARS, 1):
+                out.append(("title", line))
+        if prompt:
+            quoted = "“" + prompt + "”"
+            for line in wrap_text(quoted, DETAIL_CHARS, PROMPT_LINES):
+                out.append(("prompt", line))
+        return out
+
+    def detail_height(self, s):
+        return self.DH + len(self.detail_lines(s)) * int(14 * self.scale)
+
     def visible_layout(self):
         """Which sessions fit on screen, and how tall the panel must be.
 
@@ -547,7 +651,7 @@ class Panel:
         items, used = [], 0
         for s in self.sessions:
             expanded = s.get("session_id") in self.expanded
-            h = self.RH + (self.DH if expanded else 0)
+            h = self.row_height(s) + (self.detail_height(s) if expanded else 0)
             if items and used + h > avail:
                 break
             items.append((s, expanded))
@@ -622,8 +726,12 @@ class Panel:
             # Only announce a real transition, and never on the first snapshot
             # after (re)connecting - otherwise a restart pings for everything.
             if changed and state in ("orange", "green"):
+                # Amber always stays until you deal with it. Green normally
+                # fades after a few seconds - but if you were not at the
+                # machine when it finished, you never saw it, so it stays too.
+                sticky = state == "orange" or (state == "green" and self.away())
                 self.banners[sid] = (
-                    self.banner_text(s, was, state), state, time.time())
+                    self.banner_text(s, was, state), state, time.time(), sticky)
                 self.flash_until[sid] = time.time() + BANNER_SECS
                 self.arm_chime(sid, state)
             self.prev_state[sid] = state
@@ -695,6 +803,17 @@ class Panel:
             return                      # an agent is still working; not done
         chime.play(state, self.volume, self.sound)
 
+    def away(self):
+        """Whether the machine has been untouched long enough that you cannot
+        have seen what just happened.
+
+        Unknown (anything but Windows) counts as being here: the panel then
+        behaves exactly as it always did rather than leaving banners up that
+        nobody asked for.
+        """
+        idle = desktop.idle_seconds()
+        return idle is not None and idle >= AWAY_AFTER
+
     def banner_text(self, s, was, state):
         """What the row says about the change that just happened."""
         if state == "green":
@@ -710,8 +829,9 @@ class Panel:
         return (project + "  ·  " + detail) if project else detail
 
     def busy(self):
-        """True while a lamp is cross-fading or a banner is on screen."""
-        return bool(self.anim or self.banners)
+        """True while a lamp is cross-fading, a banner is up, or a row is
+        breathing because it has been left waiting."""
+        return bool(self.anim or self.banners or self.any_urgent())
 
     def frame(self):
         """Animation loop. Runs only while something is moving, then stops -
@@ -830,10 +950,10 @@ class Panel:
         y = self.HH
         for i, (s, expanded) in enumerate(visible):
             self.draw_row(i, y, s, now, expanded)
-            y += self.RH
+            y += self.row_height(s)
             if expanded:
                 self.draw_detail(y, s)
-                y += self.DH
+                y += self.detail_height(s)
         if hidden:
             c.create_text(
                 self.W // 2,
@@ -854,11 +974,22 @@ class Panel:
         # while the server was away is worse than one that admits it cannot
         # see. Same for a row Claude Code lists but that has never reported.
         state = s.get("state", "green") if self.connected else "unknown"
-        cy = top + self.RH // 2
-        self.row_hitboxes.append((top, top + self.RH, s))
+        rh = self.row_height(s)
+        cy = top + rh // 2
+        self.row_hitboxes.append((top, top + rh, s))
 
-        if self.hover_index == index:
-            c.create_rectangle(1, top + 1, self.W - 2, top + self.RH - 1,
+        if self.is_urgent(s):
+            # Breathing, not flashing: it has to be noticeable from the corner
+            # of your eye without being the brightest thing on the desktop.
+            phase = 0.5 - 0.5 * math.cos(2 * math.pi * time.time() / URGENT_PERIOD)
+            wash = mix(self.BG, self.LIGHTS["orange"][1], URGENT_DEPTH * phase)
+            c.create_rectangle(1, top + 1, self.W - 2, top + rh - 1,
+                               fill=wash, outline="")
+            edge = max(2, int(3 * self.scale))
+            c.create_rectangle(1, top + 1, 1 + edge, top + rh - 1,
+                               fill=self.LIGHTS["orange"][0], outline="")
+        elif self.hover_index == index:
+            c.create_rectangle(1, top + 1, self.W - 2, top + rh - 1,
                                fill=self.BG_HOVER, outline="")
 
         self.draw_signal(cy, sid, state)
@@ -1131,13 +1262,20 @@ class Panel:
                          smooth=True, fill=self.CASE_BG, outline=self.CASE_EDGE)
 
         state = self.worst_state()
+        urgent = self.any_urgent()
         r = max(3, int(4.5 * s))
         cy = h // 2
         for j, name in enumerate(ORDER):
             cx = int(13 * s) + j * int(13 * s)
             on, glow = self.LIGHTS[name]
             if name == state and self.sessions and self.connected:
-                c.create_oval(cx - r - 2, cy - r - 2, cx + r + 2, cy + r + 2,
+                halo = r + 2
+                if urgent and name == "orange":
+                    # Breathing in step with the row it stands for.
+                    phase = 0.5 - 0.5 * math.cos(
+                        2 * math.pi * time.time() / URGENT_PERIOD)
+                    halo = r + 2 + int(round(3 * s * phase))
+                c.create_oval(cx - halo, cy - halo, cx + halo, cy + halo,
                               fill=glow, outline="")
                 c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=on, outline="")
             else:
@@ -1164,11 +1302,11 @@ class Panel:
         entry = self.banners.get(sid)
         if not entry:
             return None
-        text, state, started = entry
+        text, state, started, sticky = entry
         age = time.time() - started
         if age < BANNER_FADE:
             return text, state, max(0.0, age / BANNER_FADE)
-        if state == "orange":
+        if sticky:
             return text, state, 1.0
         if age >= BANNER_SECS:
             self.banners.pop(sid, None)
@@ -1185,7 +1323,7 @@ class Panel:
         Only runs while one is up, and only compares handles - the expensive
         process walk is cached per session.
         """
-        sticky = [sid for sid, e in self.banners.items() if e[1] == "orange"]
+        sticky = [sid for sid, e in self.banners.items() if e[3]]
         if not sticky:
             return
         front = foreground_window()
@@ -1240,9 +1378,10 @@ class Panel:
         # the button below 100%.
         sc = self.scale
         pad = int(14 * sc)
+        height = self.detail_height(s)
 
         c.create_rectangle(
-            1, top, self.W - 2, top + self.DH, fill=self.DETAIL_BG, outline=""
+            1, top, self.W - 2, top + height, fill=self.DETAIL_BG, outline=""
         )
         c.create_line(int(12 * sc), top, self.W - int(12 * sc), top,
                       fill=self.BORDER)
@@ -1274,6 +1413,16 @@ class Panel:
                 anchor="e",
                 text=str(agents) + " agent" + ("" if agents == 1 else "s"),
                 fill=self.BAR_WARN,
+                font=self.f(8),
+            )
+
+        # What the session is about, under what it is doing right now: Claude
+        # Code's own title for the conversation, then the last thing you typed.
+        for kind, line in self.detail_lines(s):
+            y += int(14 * sc)
+            c.create_text(
+                pad, y, anchor="w", text=line,
+                fill=self.FG_HEADER if kind == "title" else self.FG_DIM,
                 font=self.f(8),
             )
 
@@ -1355,7 +1504,7 @@ class Panel:
             )
 
         width = int(120 * sc)
-        self.draw_button(pad, top + self.DH - int(26 * sc),
+        self.draw_button(pad, top + height - int(26 * sc),
                          width, "Focus window", "focus", s)
 
     def draw_button(self, x, y, w, label, action, s, h=None):
@@ -1471,6 +1620,12 @@ class Panel:
 
     def toggle_expanded(self, s):
         sid = s.get("session_id")
+        entry = self.banners.get(sid)
+        if entry and entry[1] == "green":
+            # You have looked at it. A "needs you" banner is deliberately not
+            # cleared here: that one waits until you open the session itself.
+            self.banners.pop(sid, None)
+            self.flash_until.pop(sid, None)
         if sid in self.expanded:
             self.expanded.discard(sid)
         else:

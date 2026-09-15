@@ -252,6 +252,38 @@
   li:not(.open) .detail { display: none; }
   li.announcing .detail { opacity: .25; transition: opacity .35s ease; }
   .drow { display: flex; justify-content: space-between; gap: 12px; }
+  /* What the session is about: Claude Code's own title for the conversation,
+     then the last thing you typed into it. Either can be missing, and either
+     can be useless on its own - the title goes stale, the last prompt is
+     often a fragment - so both are shown when both exist. */
+  .about { margin-top: 6px; }
+  .about:empty { display: none; }
+  .title, .prompt {
+    display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .title {
+    -webkit-line-clamp: 1;
+    font-size: 11px; color: var(--header);
+  }
+  .prompt {
+    -webkit-line-clamp: 2;
+    margin-top: 2px;
+    font-size: 12px; color: var(--dim);
+  }
+  .title:empty, .prompt:empty { display: none; }
+
+  /* A session you have left waiting stops being just another amber row. No
+     sound - the chime already had its turn when it went amber. */
+  @keyframes urgentBreath {
+    0%, 100% { background: var(--row); }
+    50%      { background: var(--orange-halo); }
+  }
+  li.urgent {
+    animation: urgentBreath 1.8s ease-in-out infinite;
+    border-left: 3px solid var(--orange);
+    padding-left: 11px;
+  }
+  body.offline li.urgent { animation: none; border-left-color: var(--border); }
   .drow b { font-weight: 600; color: var(--fg); }
   .agents { color: var(--orange); }
   .bar {
@@ -366,6 +398,9 @@
   let clockOffset = 0;          // server clock minus ours
   let prevState = new Map();
   let seenFirst = false;        // suppresses a chime storm on (re)connect
+  // Seconds a session may wait on you before its row starts shouting. Matches
+  // URGENT_AFTER in panel/panel.py so the two panels agree.
+  const URGENT_AFTER = 120;
   let connected = false;        // false = the rows on screen are only history
   let lastFrame = 0;            // when the server last said anything at all
   let audio = null;
@@ -575,6 +610,8 @@
           '<div class="detail">' +
             '<div class="drow"><span class="activity"></span>' +
               '<span class="agents"></span></div>' +
+            '<div class="about"><span class="title"></span>' +
+              '<span class="prompt"></span></div>' +
             '<div class="ctxline drow"><span class="ctx"></span>' +
               '<span class="pct"></span></div>' +
             '<div class="bar"><span></span></div>' +
@@ -592,6 +629,9 @@
       const elapsed = now - (Number(s.since) || now);
       // With the feed down, "how long it has been in this state" is only how
       // long ago we stopped hearing about it. Say nothing rather than that.
+      // Left waiting long enough that it should be the first thing you see.
+      li.classList.toggle("urgent",
+        connected && s.state === "orange" && elapsed >= URGENT_AFTER);
       li.querySelector(".time").textContent = !connected ? "—"
         : s.state === "unknown" ? ""
         : s.state === "green" && elapsed > 300 ? "idle" : fmt(elapsed);
@@ -620,6 +660,9 @@
       ? "Working" + (s.tool ? "  ·  " + s.tool : "")
       : s.state === "orange" ? (s.detail || "Waiting for you") : "Idle";
     li.querySelector(".activity").textContent = activity;
+    li.querySelector(".title").textContent = (s.title || "").trim();
+    li.querySelector(".prompt").textContent =
+      (s.prompt || "").trim() ? "“" + (s.prompt || "").trim() + "”" : "";
 
     const agents = Number(u.agents) || 0;
     li.querySelector(".agents").textContent =

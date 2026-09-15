@@ -145,7 +145,9 @@ Host                                Docker
   itself: check that the process behind a registry entry is still running.
 * **Token reader** — `hooks/transcript.py` tails the session's transcript
   JSONL, keeping a byte offset per session so each hook parses only what was
-  appended (~10 ms, not a full re-read of a multi-megabyte file).
+  appended (~10 ms, not a full re-read of a multi-megabyte file). It also picks
+  up the two lines that say what the session is about: Claude Code's generated
+  title and your last prompt.
 * **Server** — holds the session table in memory and the settings both panels
   share, pushes snapshots over SSE,
   serves the browser panel, and installs the hooks at startup. It mounts
@@ -166,6 +168,9 @@ Host                                Docker
 | `Stop`             | green  | turn complete                              |
 | `SessionEnd`       | —      | row removed                                |
 | *(none yet)*       | dark   | listed by Claude Code, has not reported    |
+
+An amber row that has been waiting more than two minutes escalates on its own,
+silently - see [When you have been left waiting](#when-you-have-been-left-waiting).
 
 Claude Code fires `Notification` for twelve different things, and only four of
 them mean it is blocked on you. The rest — it has been idle a minute, you
@@ -244,6 +249,52 @@ The `×` **minimises** rather than quits. The badge stays on top, lights
 whichever state most wants your attention, and shows how many sessions are
 running; clicking it brings the panel straight back. Quitting is on the
 right-click menu, so it takes a deliberate choice rather than one stray click.
+
+### Telling sessions apart
+
+Expanding a row says what that session is *about*, not just what it is doing:
+
+```
+needs permission: Bash
+Repository overview
+"Sometimes the map's locations disappear
+ after clicking around, double check that..."
+Context  341k / 1M                      34%
+```
+
+Both lines come from Claude Code itself, written into the transcript once a
+turn: `ai-title`, the title it generates for the conversation, and
+`last-prompt`, the last thing you typed. Neither is reliable on its own - the
+title is generated early and goes stale, and the last prompt is often a
+fragment like "carry on" - so both are shown when both exist. A long prompt
+wraps to two lines and is then cut.
+
+This costs nothing extra to collect: the transcript is already being read for
+the token figures, so even a session that has never fired a hook says what it
+is working on the moment it is adopted.
+
+### When you have been left waiting
+
+A session that has needed you for more than **two minutes** stops being just
+another amber row: it grows, its background breathes amber, and it takes a
+bright edge, in both panels. Silent, deliberately - the chime already had its
+turn when the session went amber, and a second sound for the same event is how
+alerts get ignored.
+
+It stops the moment the session moves on, or you open it. Minimising does not
+hide it: the badge's amber lamp breathes in step.
+
+### Finished while you were away
+
+The "finished" banner normally fades after four seconds. If nobody had touched
+the machine for five minutes when a session finished, you were not there to
+see it, so it stays up until you look - clicking the row is enough, and so is
+opening the session. A "needs you" banner still waits until you actually open
+that session, as it always did.
+
+Windows only: it asks the OS how long the machine has been idle
+(`GetLastInputInfo`), and there is no way to ask that on macOS or Linux
+without a dependency. Elsewhere it behaves exactly as it did before.
 
 ### Alerts
 
@@ -398,7 +449,7 @@ python tests/run_all.py            # everything
 python tests/run_all.py panel hook # just those modules
 ```
 
-276 tests, zero dependencies. The server tests skip unless `fastapi` is
+285 tests, zero dependencies. The server tests skip unless `fastapi` is
 importable;
 install `server/requirements.txt` into a venv to run them too. Nothing in the
 suite touches your real `settings.json`, port 8787, or the running panel.

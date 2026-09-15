@@ -169,6 +169,18 @@ def foreground_window():
     return 0
 
 
+def idle_seconds():
+    """Seconds since the user last touched the machine, or None if unknown.
+
+    Windows only for now: there is no way to ask this on macOS or Linux
+    without a dependency, and None means "assume they are here", which keeps
+    the panel's behaviour exactly as it was.
+    """
+    if IS_WIN:
+        return winutil.idle_seconds()
+    return None
+
+
 def window_title(handle):
     """A human-readable name for whatever focus_session returned."""
     if IS_WIN:
