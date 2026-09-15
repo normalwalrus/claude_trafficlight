@@ -59,15 +59,36 @@ HOOK = os.path.join(PAYLOAD_DIR, HOOK_NAME)
 
 LAUNCHER_CMD = """@echo off
 REM Claude Traffic Light hook launcher. Generated - do not edit.
-REM Tries any Python on PATH, then falls back to curl so the lights still work
-REM on a machine with no Python at all (the server parses the payload instead).
+REM
+REM The interpreter is resolved once and cached: a `where` lookup costs ~50ms
+REM and this runs on every hook, which is latency the user sees as the light
+REM lagging behind Claude. Falls back to curl so the lights still work on a
+REM machine with no Python at all (the server parses the payload instead).
 setlocal
-set "SCRIPT=%~dp0claude_light_hook.py"
+set "DIR=%~dp0"
+set "SCRIPT=%DIR%claude_light_hook.py"
+set "CACHE=%DIR%interpreter.txt"
 if "%CLAUDE_LIGHT_URL%"=="" set "CLAUDE_LIGHT_URL=http://127.0.0.1:8787"
-where py >nul 2>&1 && ( py -3 "%SCRIPT%" %* & exit /b 0 )
-where python >nul 2>&1 && ( python "%SCRIPT%" %* & exit /b 0 )
-where python3 >nul 2>&1 && ( python3 "%SCRIPT%" %* & exit /b 0 )
-where curl >nul 2>&1 && ( curl -s -m 2 -X POST -H "Content-Type: application/json" --data-binary @- "%CLAUDE_LIGHT_URL%/hook/%~1" >nul 2>&1 & exit /b 0 )
+
+set "PY="
+if exist "%CACHE%" set /p PY=<"%CACHE%"
+if defined PY if exist "%PY%" goto run
+
+REM One-time resolution. python.exe first: going through the py launcher costs
+REM an extra process spawn. The findstr filter drops the Microsoft Store alias
+REM stub, which opens the Store instead of running anything.
+for /f "delims=" %%P in ('where python.exe 2^>nul ^| findstr /v /i "WindowsApps"') do if not defined PY set "PY=%%P"
+if not defined PY for /f "delims=" %%P in ('where python3.exe 2^>nul ^| findstr /v /i "WindowsApps"') do if not defined PY set "PY=%%P"
+if not defined PY for /f "delims=" %%P in ('where py.exe 2^>nul') do if not defined PY set "PY=%%P"
+if not defined PY goto curlfallback
+>"%CACHE%" echo %PY%
+
+:run
+"%PY%" "%SCRIPT%" %*
+exit /b 0
+
+:curlfallback
+where curl >nul 2>&1 && curl -s -m 2 -X POST -H "Content-Type: application/json" --data-binary @- "%CLAUDE_LIGHT_URL%/hook/%~1" >nul 2>&1
 exit /b 0
 """
 

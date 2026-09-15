@@ -88,7 +88,8 @@ Host                                Docker
 
 * **Hooks** — staged into `~/.claude/claude-trafficlight/` and registered in
   `~/.claude/settings.json`. Never blocks Claude: 1s timeout, all errors
-  swallowed, always exits 0. Measured at ~150 ms per invocation.
+  swallowed, always exits 0. About 90 ms per invocation, and roughly 190 ms
+  from Claude starting work to the lamp being lit.
 * **Token reader** — `hooks/transcript.py` tails the session's transcript
   JSONL, keeping a byte offset per session so each hook parses only what was
   appended (~10 ms, not a full re-read of a multi-megabyte file).
@@ -109,8 +110,12 @@ Host                                Docker
 | `Stop`             | green  | turn complete                              |
 | `SessionEnd`       | —      | row removed                                |
 
-A session silent for 15 minutes is dropped (covers killed terminals). Tune with
-`STALE_SECONDS` in `docker-compose.yml`.
+A session is dropped when Claude Code stops listing it in
+`~/.claude/sessions/`, or after `STALE_SECONDS` (default 15 min) of silence if
+that registry cannot be read. Hook traffic alone is *not* used as a liveness
+signal: a session you leave open in your editor fires nothing at all between
+turns, and the timeout on its own would delete a row that is plainly still
+running.
 
 ## Using it
 
@@ -226,6 +231,10 @@ suite touches your real `settings.json`, port 8787, or the running panel.
   anything else is refused.
 * Session state is in memory. Restarting the container empties the panel until
   each session reports its next event.
+* The hook launcher caches which interpreter it found in
+  `~/.claude/claude-trafficlight/interpreter.txt`; the next `docker compose up`
+  reads that and registers Python directly, dropping the shell from the chain.
+  Delete the file if you change Python installations.
 * The server binds to `127.0.0.1` only. Point the panel and hooks elsewhere
   with `CLAUDE_LIGHT_URL`.
 * On Linux, click-to-focus needs `wmctrl` or `xdotool`, and chimes need one of

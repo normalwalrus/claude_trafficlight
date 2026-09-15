@@ -37,6 +37,23 @@ def host_join(*parts):
     return sep.join(p.rstrip("/\\") for p in parts if p)
 
 
+def cached_interpreter(dest_dir):
+    """The interpreter path the launcher resolved on its first run, if any."""
+    try:
+        with open(os.path.join(dest_dir, "interpreter.txt"), encoding="utf-8") as fh:
+            value = fh.read().strip().strip('"')
+    except OSError:
+        return ""
+    # It is a host path, so we cannot stat it; sanity-check the shape instead.
+    if not value or "\n" in value or len(value) > 500:
+        return ""
+    low = value.lower()
+    if not (low.endswith("python.exe") or low.endswith("python3")
+            or low.endswith("python")):
+        return ""
+    return value
+
+
 def match_owner(path, reference):
     """Give written files the same owner as the mounted directory.
 
@@ -93,9 +110,20 @@ def main():
         windows=windows,
     )
 
+    # The launcher caches the interpreter it resolved on its first run, and we
+    # can see that file through the mount. Once it exists we can invoke Python
+    # directly and drop the shell from the chain - worth ~25ms on every hook,
+    # which is latency the user sees as the light lagging behind Claude.
+    command_base = '"' + launcher + '"'
+    interpreter = cached_interpreter(dest)
+    if interpreter:
+        hook = host_join(host_payload, install_hooks.HOOK_NAME)
+        command_base = '"' + interpreter + '" -S "' + hook + '"'
+        print("[bootstrap] using cached interpreter: " + interpreter)
+
     rc = install_hooks.main(
         argv=[],
-        command_base='"' + launcher + '"',
+        command_base=command_base,
         source_dir=PAYLOAD_SOURCE,
     )
     match_owner(dest, HOST_CLAUDE)

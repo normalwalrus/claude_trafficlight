@@ -66,9 +66,11 @@ LAMP_X0 = 19
 LAMP_GAP = 20
 TEXT_X = 80
 
-FADE_SECS = 0.25     # cross-fade from the old lamp to the new one
+FADE_SECS = 0.25     # the old lamp dims over this long
+RISE_SECS = 0.09     # ...but the new one lights in this long
 PULSE_SECS = 0.60    # one halo swell on the lamp that just lit
 FRAME_MS = 40        # ~25fps, and only while something is actually moving
+POLL_MS = 16         # how often the UI thread drains the SSE queue
 
 BANNER_SECS = 4.0
 BANNER_FADE = 0.35
@@ -421,7 +423,7 @@ class Panel:
         except Exception:
             pass
         finally:
-            self.root.after(80, self.pump)
+            self.root.after(POLL_MS, self.pump)
 
     def on_snapshot(self, body):
         try:
@@ -711,9 +713,11 @@ class Panel:
             return levels, 0.0
 
         if age < FADE_SECS:
-            p = age / FADE_SECS
-            levels[was] = 1.0 - p
-            levels[now_state] = p
+            levels[was] = 1.0 - age / FADE_SECS
+            # The new lamp rises far faster than the old one falls. A symmetric
+            # cross-fade means the light only reads as "on" halfway through,
+            # which shows up as the panel lagging behind Claude.
+            levels[now_state] = min(1.0, age / RISE_SECS)
             return levels, 0.0
 
         levels[now_state] = 1.0

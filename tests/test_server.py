@@ -332,3 +332,94 @@ def test_concurrent_posts_do_not_lose_or_corrupt_sessions():
     urllib.request.urlopen(
         urllib.request.Request(base + "/sessions", method="DELETE"), timeout=5
     ).read()
+
+
+# --- liveness ----------------------------------------------------------------
+
+
+def test_an_idle_but_open_session_is_not_reaped():
+    """The reported bug: a session left open in the editor vanished from the
+    panel. Between turns it fires no hooks at all, so the inactivity timeout
+    alone deleted a row the user could plainly still see."""
+    import json as _json
+    import os
+    import tempfile
+
+    app = _srv()
+    mount = tempfile.mkdtemp(prefix="clt-registry-")
+    os.makedirs(os.path.join(mount, "sessions"))
+
+    def register(session_id, updated_ms):
+        path = os.path.join(mount, "sessions", session_id + ".json")
+        with open(path, "w", encoding="utf-8") as fh:
+            _json.dump({"sessionId": session_id, "status": "idle",
+                        "updatedAt": updated_ms, "cwd": "/tmp/x"}, fh)
+
+    saved_dir, saved_stale = app.HOST_CLAUDE, app.STALE_SECONDS
+    app.HOST_CLAUDE = mount
+    app.STALE_SECONDS = 1
+    try:
+        now_ms = time.time() * 1000
+        register("open-idle", now_ms)          # open in the editor, just quiet
+        # "gone" is deliberately absent from the registry
+
+        app.store.sessions.clear()
+        for sid in ("open-idle", "gone"):
+            app.store.apply(app.Event(session_id=sid, event="Stop", project=sid))
+            app.store.sessions[sid]["updated"] = time.time() - 9999
+
+        app.store.reap()
+        ids = set(app.store.sessions)
+        ok("open-idle" in ids,
+           "a session Claude Code still lists must survive: %r" % ids)
+        ok("gone" not in ids,
+           "a session not in the registry should still be reaped: %r" % ids)
+    finally:
+        app.HOST_CLAUDE, app.STALE_SECONDS = saved_dir, saved_stale
+        app.store.sessions.clear()
+
+
+def test_a_stale_registry_entry_does_not_keep_a_row_forever():
+    """If a session is killed abruptly its registry file can linger."""
+    import json as _json
+    import os
+    import tempfile
+
+    app = _srv()
+    mount = tempfile.mkdtemp(prefix="clt-registry-old-")
+    os.makedirs(os.path.join(mount, "sessions"))
+    with open(os.path.join(mount, "sessions", "old.json"), "w", encoding="utf-8") as fh:
+        _json.dump({"sessionId": "old", "status": "busy",
+                    "updatedAt": (time.time() - 99999) * 1000}, fh)
+
+    saved_dir, saved_stale = app.HOST_CLAUDE, app.STALE_SECONDS
+    app.HOST_CLAUDE = mount
+    app.STALE_SECONDS = 1
+    try:
+        app.store.sessions.clear()
+        app.store.apply(app.Event(session_id="old", event="Stop", project="old"))
+        app.store.sessions["old"]["updated"] = time.time() - 9999
+        app.store.reap()
+        ok("old" not in app.store.sessions,
+           "an expired registry entry must not pin the row")
+    finally:
+        app.HOST_CLAUDE, app.STALE_SECONDS = saved_dir, saved_stale
+        app.store.sessions.clear()
+
+
+def test_no_registry_falls_back_to_the_timeout():
+    """Without the mount there is nothing to consult, so behave as before."""
+    app = _srv()
+    saved_dir, saved_stale = app.HOST_CLAUDE, app.STALE_SECONDS
+    app.HOST_CLAUDE = "/definitely/not/here"
+    app.STALE_SECONDS = 1
+    try:
+        eq(app.live_session_ids(), None, "an unreadable registry reports None")
+        app.store.sessions.clear()
+        app.store.apply(app.Event(session_id="x", event="Stop", project="x"))
+        app.store.sessions["x"]["updated"] = time.time() - 9999
+        app.store.reap()
+        ok("x" not in app.store.sessions, "the timeout still applies")
+    finally:
+        app.HOST_CLAUDE, app.STALE_SECONDS = saved_dir, saved_stale
+        app.store.sessions.clear()

@@ -43,11 +43,52 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 HOST_CLAUDE = os.environ.get("HOST_CLAUDE_DIR", "/host-claude")
 HOST_HOME = os.environ.get("HOST_HOME", "")
 
+# Claude Code keeps its own registry of running sessions in ~/.claude/sessions.
+# We mount that, so liveness does not have to be guessed from hook traffic.
+# An entry older than this is treated as a leftover from a killed session.
+REGISTRY_TTL = int(os.environ.get("REGISTRY_TTL", "3600"))
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "hookpayload"))
 try:
     import transcript as _transcript
 except Exception:
     _transcript = None
+
+
+def live_session_ids() -> Optional[Set[str]]:
+    """Session ids Claude Code itself currently lists as running.
+
+    Returns None when the registry cannot be read (no mount), so callers know
+    to fall back to the inactivity timeout rather than reaping everything.
+    """
+    folder = os.path.join(HOST_CLAUDE, "sessions")
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+
+    live: Set[str] = set()
+    cutoff = time.time() - REGISTRY_TTL
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(folder, name), "r", encoding="utf-8") as fh:
+                entry = json.load(fh)
+        except Exception:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        sid = entry.get("sessionId")
+        if not sid:
+            continue
+        stamp = entry.get("updatedAt")
+        # updatedAt is milliseconds. A file with no stamp still counts as live:
+        # better to keep a row too long than to drop a session that is open.
+        if isinstance(stamp, (int, float)) and stamp / 1000.0 < cutoff:
+            continue
+        live.add(str(sid))
+    return live
 
 
 def host_path_to_container(path: str) -> str:
@@ -183,8 +224,23 @@ class Store:
         self.publish()
 
     def reap(self) -> None:
+        """Drop sessions that are really gone.
+
+        Hook traffic alone is not a liveness signal: a session you left open in
+        your editor fires nothing at all between turns, so the inactivity
+        timeout on its own would quietly delete a row that is plainly still
+        running. Claude Code's own session registry is the authority; the
+        timeout is only the fallback for when it cannot be read.
+        """
+        live = live_session_ids()
         cutoff = time.time() - STALE_SECONDS
-        dead = [sid for sid, s in self.sessions.items() if s["updated"] < cutoff]
+        dead = []
+        for sid, s in self.sessions.items():
+            if s["updated"] >= cutoff:
+                continue
+            if live is not None and sid in live:
+                continue  # open, just idle
+            dead.append(sid)
         for sid in dead:
             self.sessions.pop(sid, None)
         if dead:
