@@ -934,3 +934,93 @@ def test_alerts_off_arms_nothing():
         chime.play = original
         p.sounds = True
         p._chime_armed.clear()
+
+
+# --- minimise / restore ------------------------------------------------------
+
+
+def test_the_close_button_minimises_rather_than_quitting():
+    """Closing used to end the process, and getting the panel back meant a
+    terminal. The badge is the way back."""
+    p = panel()
+    p.collapsed = False
+    p.settings_open = False
+    p.on_snapshot(snapshot([session(0, state="orange"), session(1, state="red")]))
+    try:
+        big = (int(p.canvas["width"]), int(p.canvas["height"]))
+
+        class Ev:
+            x, y = p.W - 10, 5      # the x in the header
+        p._press = None
+        p._dragging = False
+        p.on_release(Ev())
+
+        ok(p.collapsed, "the close button should minimise")
+        small = (int(p.canvas["width"]), int(p.canvas["height"]))
+        ok(small[0] < big[0] and small[1] < big[1],
+           "the badge should be smaller: %r vs %r" % (small, big))
+        ok(p.root.winfo_exists(), "the window must still exist")
+    finally:
+        p.expand()
+
+
+def test_clicking_the_badge_restores_the_panel():
+    p = panel()
+    p.on_snapshot(snapshot([session(0)]))
+    p.collapse()
+    try:
+        ok(p.collapsed, "collapsed")
+
+        class Ev:
+            x, y = 10, 10
+        p._press = None
+        p._dragging = False
+        p.on_release(Ev())
+        ok(not p.collapsed, "a click anywhere on the badge restores it")
+        eq(int(p.canvas["width"]), p.W, "full width is restored")
+    finally:
+        p.expand()
+
+
+def test_collapsing_and_expanding_is_stable_over_many_cycles():
+    p = panel()
+    p.on_snapshot(snapshot([session(0)]))
+    try:
+        expanded = (int(p.canvas["width"]), int(p.canvas["height"]))
+        for _ in range(5):
+            p.collapse()
+            p.expand()
+        eq((int(p.canvas["width"]), int(p.canvas["height"])), expanded,
+           "size should return to exactly what it was")
+    finally:
+        p.expand()
+
+
+def test_the_badge_shows_whatever_most_wants_attention():
+    p = panel()
+    try:
+        p.on_snapshot(snapshot([session(0, state="green"), session(1, state="red")]))
+        eq(p.worst_state(), "red", "red beats green")
+        p.on_snapshot(snapshot([session(0, state="red"), session(1, state="orange")]))
+        eq(p.worst_state(), "orange", "orange beats red")
+        p.on_snapshot(snapshot([session(0, state="green")]))
+        eq(p.worst_state(), "green", "green when nothing is happening")
+        p.on_snapshot(snapshot([]))
+        eq(p.worst_state(), "green", "no sessions is not an error")
+
+        p.on_snapshot(snapshot([session(0, state="orange"), session(1, state="red")]))
+        p.collapse()
+        ok("2" in texts(p), "the badge should show the session count: %r" % texts(p))
+    finally:
+        p.expand()
+
+
+def test_the_minimised_state_is_remembered():
+    p = panel()
+    try:
+        p.collapse()
+        eq(load_saved().get("collapsed"), True, "persisted while minimised")
+        p.expand()
+        eq(load_saved().get("collapsed"), False, "and when restored")
+    finally:
+        p.expand()

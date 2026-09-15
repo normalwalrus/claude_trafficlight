@@ -25,6 +25,10 @@ docker compose up -d
 
 Open **http://localhost:8787** and you are done.
 
+Press **pop out** there to float the panel in a small always-on-top window —
+Chrome's Document Picture-in-Picture, so it stays above your editor without
+anything installed on the host. Closing it puts the panel back in the tab.
+
 That really is the whole install. On startup the container copies its hook
 payload into your `~/.claude/` and registers it in `settings.json` itself, so:
 
@@ -98,6 +102,8 @@ Host                                Docker
   `~/.claude` read-write, which is also how it reads transcripts when the host
   has no Python.
 * **Panel** — standard library only; no `pip install` anywhere on the host.
+  The `×` minimises it to a badge rather than quitting: closing used to end the
+  process, and getting it back meant going to a terminal.
 
 ### State mapping
 
@@ -132,7 +138,9 @@ registry cannot be read at all.
 | **Click a row**          | Expand / collapse its detail                    |
 | **Double-click a row**   | Focus that session's window                     |
 | Right-click              | Settings, always-on-top, alerts, quit           |
-| `×` in the header        | Quit the panel (the server keeps running)       |
+| `×` in the header        | Minimise to a small badge                       |
+| Click the badge          | Restore the panel                               |
+| Right-click → Quit       | Actually close it (the server keeps running)    |
 
 ### Alerts
 

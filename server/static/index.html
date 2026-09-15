@@ -250,6 +250,17 @@
   .acts { display: flex; gap: 8px; margin-top: 2px; }
   .acts button { font-size: 11px; }
 
+  /* Compact layout for the popped-out window: it is small and always on top,
+     so everything that is not a session row gets out of the way. */
+  body.pip { padding: 8px; }
+  body.pip .panel { max-width: none; }
+  body.pip footer { display: none; }
+  body.pip #popout { display: none; }
+  body.pip header { padding-bottom: 6px; }
+  body.pip li { margin-top: 6px; padding: 8px 10px; }
+  body.pip .sub { display: none; }
+  body.pip li.open .sub { display: block; }
+
   .empty {
     padding: 28px 14px; text-align: center;
     color: var(--dim); font-size: 13px;
@@ -272,6 +283,7 @@
     <span class="spacer"></span>
     <span id="count">connecting</span>
     <button id="sound" aria-pressed="false" title="Browsers require a click before audio can play">Sound off</button>
+    <button id="popout" title="Float this in a small always-on-top window">&#11021; pop out</button>
     <button id="gear" aria-pressed="false" title="Settings">&#9881;</button>
   </header>
 
@@ -773,6 +785,52 @@
   applyScale(savedScale);
   volEl.value = String(volume);
   outVol.value = volume <= 0 ? "muted" : volume + "%";
+
+  // --- pop out
+  const panelEl = document.querySelector(".panel");
+  const popoutEl = document.getElementById("popout");
+  let pipWindow = null;
+
+  function stylesFor(doc) {
+    // Our CSS lives in one <style> tag; clone it rather than re-fetching.
+    for (const node of document.querySelectorAll("style, link[rel=stylesheet]")) {
+      doc.head.appendChild(node.cloneNode(true));
+    }
+  }
+
+  async function popOut() {
+    // Document Picture-in-Picture gives a real always-on-top window. Chrome
+    // only; everything else falls back to a plain popup, which cannot float
+    // above other windows but is still a small dedicated window.
+    if (!("documentPictureInPicture" in window)) {
+      const w = window.open(location.pathname + "?popup=1", "claude-traffic-light",
+                            "popup=yes,width=420,height=320");
+      if (w) w.focus();
+      return;
+    }
+    if (pipWindow) { pipWindow.focus(); return; }
+    try {
+      pipWindow = await documentPictureInPicture.requestWindow(
+        { width: 420, height: 320 });
+    } catch (err) {
+      return;   // the user dismissed the permission, or it is unavailable
+    }
+    stylesFor(pipWindow.document);
+    pipWindow.document.body.classList.add("pip");
+    pipWindow.document.body.appendChild(panelEl);
+    pipWindow.addEventListener("pagehide", () => {
+      // Put the panel back so the tab is not left empty.
+      document.body.appendChild(panelEl);
+      pipWindow = null;
+    });
+  }
+
+  popoutEl.addEventListener("click", popOut);
+
+  // A fallback popup renders itself compactly and hides its own pop-out button.
+  if (new URLSearchParams(location.search).get("popup") === "1") {
+    document.body.classList.add("pip");
+  }
 
   connect();
   setInterval(render, 500);

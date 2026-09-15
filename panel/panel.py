@@ -324,6 +324,7 @@ class Panel:
         self.banners = {}       # sid -> (text, state, started)
         self.prev_since = {}    # sid -> when the previous state began
         self._chime_armed = {}  # sid -> (state, armed at) awaiting confirmation
+        self.collapsed = bool(self.cfg.get("collapsed", False))
         self._frame_job = None
         self.settings_open = False
         self.slider_hitboxes = []
@@ -381,6 +382,7 @@ class Panel:
         self.menu.add_command(label="Test sound", command=self.test_chime)
         self.menu.add_separator()
         self.menu.add_command(label="Settings…", command=self.toggle_settings)
+        self.menu.add_command(label="Minimise to a badge", command=self.collapse)
         self.menu.add_command(label="Reset position", command=self.reset_position)
         self.menu.add_separator()
         self.menu.add_command(label="Quit", command=self.quit)
@@ -464,7 +466,9 @@ class Panel:
 
     def resize(self, body_height):
         h = self.HH + max(self.RH, body_height) + 4
-        self.canvas.config(height=h)
+        # Width too: the collapsed badge shrinks it, and expanding again has to
+        # put it back.
+        self.canvas.config(width=self.W, height=h)
         self.root.geometry(str(self.W) + "x" + str(h))
         return h
 
@@ -628,6 +632,10 @@ class Panel:
         c.delete("all")
         self.button_hitboxes = []
         self.slider_hitboxes = []
+        self.row_hitboxes = []
+        if self.collapsed:
+            self.draw_collapsed()
+            return
         visible, hidden, body = self.visible_layout()
         if self.settings_open:
             body += self.SETTINGS_H
@@ -957,6 +965,59 @@ class Panel:
         chime.play("green", self.volume, self.sound)
         self.draw()
 
+    def collapse(self):
+        """Shrink to a small always-on-top badge.
+
+        The badge is the whole point: closing the panel used to end the
+        process, and getting it back meant a terminal. Clicking the badge
+        brings it straight back.
+        """
+        self.collapsed = True
+        self.cfg["collapsed"] = True
+        save_config(self.cfg)
+        self.draw()
+
+    def expand(self):
+        self.collapsed = False
+        self.cfg["collapsed"] = False
+        save_config(self.cfg)
+        self.draw()
+
+    def worst_state(self):
+        """The state the badge shows: whatever most wants your attention."""
+        states = {s.get("state") for s in self.sessions if isinstance(s, dict)}
+        for name in ("orange", "red", "green"):
+            if name in states:
+                return name
+        return "green"
+
+    def draw_collapsed(self):
+        c = self.canvas
+        s = self.scale
+        w, h = int(84 * s), int(26 * s)
+        self.canvas.config(width=w, height=h)
+        self.root.geometry(str(w) + "x" + str(h))
+        c.create_polygon(round_rect(1, 1, w - 2, h - 2, max(4, int(6 * s))),
+                         smooth=True, fill=self.CASE_BG, outline=self.CASE_EDGE)
+
+        state = self.worst_state()
+        r = max(3, int(4.5 * s))
+        cy = h // 2
+        for j, name in enumerate(ORDER):
+            cx = int(13 * s) + j * int(13 * s)
+            on, glow = self.LIGHTS[name]
+            if name == state and self.sessions:
+                c.create_oval(cx - r - 2, cy - r - 2, cx + r + 2, cy + r + 2,
+                              fill=glow, outline="")
+                c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=on, outline="")
+            else:
+                c.create_oval(cx - r, cy - r, cx + r, cy + r,
+                              fill=self.LAMP_OFF, outline="")
+
+        c.create_text(w - int(10 * s), cy, anchor="e",
+                      text=str(len(self.sessions)), fill=self.FG,
+                      font=self.f(8, "bold"))
+
     def toggle_settings(self):
         self.settings_open = not self.settings_open
         self.draw()
@@ -1186,10 +1247,18 @@ class Panel:
             self._dragging = False
             return
 
+        if self.collapsed:
+            self._press = None
+            self._dragging = False
+            self.expand()
+            return
+
         if ev.y < self.HH:
             if ev.x > self.W - int(24 * self.scale):
+                # Minimise, not quit. Quitting from here left no way back
+                # without a terminal; "Quit" is on the right-click menu.
                 self._press = None
-                self.quit()
+                self.collapse()
                 return
             if ev.x > self.W - int(40 * self.scale):
                 self._press = None
