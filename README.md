@@ -131,8 +131,7 @@ registry cannot be read at all.
 | Drag anywhere            | Move it. Position is remembered and clamped on screen. |
 | **Click a row**          | Expand / collapse its detail                    |
 | **Double-click a row**   | Focus that session's window                     |
-| Middle-click a row       | Dismiss it                                      |
-| Right-click              | Always-on-top, alerts, chime volume, quit       |
+| Right-click              | Settings, always-on-top, alerts, quit           |
 | `×` in the header        | Quit the panel (the server keeps running)       |
 
 ### Alerts

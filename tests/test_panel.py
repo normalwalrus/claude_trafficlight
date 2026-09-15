@@ -441,25 +441,38 @@ def test_the_detail_shows_context_and_token_figures():
     p.toggle_expanded(p.sessions[0])
 
 
-def test_the_detail_offers_focus_and_dismiss_buttons():
+def test_the_detail_offers_a_focus_button():
     p = panel()
     p.expanded.clear()
     p.settings_open = False
     p.on_snapshot(snapshot([session(0, usage=USAGE)]))
-    eq(len([b for b in p.button_hitboxes if b[4] in ("dismiss", "focus")]), 0,
-       "no row buttons while collapsed")
+    eq(len([b for b in p.button_hitboxes if b[4] == "focus"]), 0,
+       "no row button while collapsed")
 
     p.toggle_expanded(p.sessions[0])
-    # Settings adds its own buttons; this is about the row's two.
-    actions = sorted(b[4] for b in p.button_hitboxes
-                     if b[4] in ("dismiss", "focus"))
-    eq(actions, ["dismiss", "focus"], "both buttons present")
+    row_buttons = [b for b in p.button_hitboxes if b[4] == "focus"]
+    eq(len(row_buttons), 1, "focus button present")
 
-    for x0, y0, x1, y1, action, s in p.button_hitboxes:
-        mid_x, mid_y = (x0 + x1) // 2, (y0 + y1) // 2
-        got, _s = p.button_at(mid_x, mid_y)
-        eq(got, action, "button hit testing at its own centre")
+    x0, y0, x1, y1, action, _s = row_buttons[0]
+    got, _row = p.button_at((x0 + x1) // 2, (y0 + y1) // 2)
+    eq(got, "focus", "hit testing at its own centre")
     ok(p.button_at(2, 2) == (None, None), "header is not a button")
+    p.toggle_expanded(p.sessions[0])
+
+
+def test_there_is_no_way_to_dismiss_a_row():
+    """Dismissing was removed because it could not work: the session is still
+    running, so the next registry sweep adopts the row straight back."""
+    p = panel()
+    p.expanded.clear()
+    p.settings_open = False
+    p.on_snapshot(snapshot([session(0, usage=USAGE)]))
+    p.toggle_expanded(p.sessions[0])
+    actions = {b[4] for b in p.button_hitboxes}
+    ok("dismiss" not in actions, "a dismiss button is back: %r" % actions)
+    ok(not hasattr(p, "delete_session"), "delete_session should be gone")
+    ok(not hasattr(p, "clear_sessions"), "clear_sessions should be gone")
+    ok(not hasattr(p, "on_middle_click"), "middle-click dismiss should be gone")
     p.toggle_expanded(p.sessions[0])
 
 
@@ -471,8 +484,8 @@ def test_a_session_without_token_data_still_expands():
     p.toggle_expanded(p.sessions[0])
     body = " ".join(texts(p))
     ok("No token data" in body, "should explain the absence: %r" % body)
-    eq(len([b for b in p.button_hitboxes if b[4] in ("dismiss", "focus")]), 2,
-       "buttons still available")
+    eq(len([b for b in p.button_hitboxes if b[4] == "focus"]), 1,
+       "the focus button is still available")
     p.toggle_expanded(p.sessions[0])
 
 

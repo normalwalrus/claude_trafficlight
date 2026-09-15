@@ -374,7 +374,6 @@ class Panel:
         self.menu.add_command(label="Test sound", command=self.test_chime)
         self.menu.add_separator()
         self.menu.add_command(label="Settings…", command=self.toggle_settings)
-        self.menu.add_command(label="Clear all sessions", command=self.clear_sessions)
         self.menu.add_command(label="Reset position", command=self.reset_position)
         self.menu.add_separator()
         self.menu.add_command(label="Quit", command=self.quit)
@@ -383,7 +382,6 @@ class Panel:
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.canvas.bind("<Double-Button-1>", self.on_double_click)
-        self.canvas.bind("<ButtonRelease-2>", self.on_middle_click)
         self.canvas.bind("<Button-3>", self.on_right_click)
         self.canvas.bind("<Motion>", self.on_motion)
         self.canvas.bind("<Leave>", self.on_leave)
@@ -1068,10 +1066,9 @@ class Panel:
                 font=self.f(8),
             )
 
-        self.draw_button(14, top + self.DH - 26, 110, "Focus window", "focus", s)
-        self.draw_button(
-            self.W - 86, top + self.DH - 26, 72, "Dismiss", "dismiss", s
-        )
+        width = int(120 * self.scale)
+        self.draw_button(int(14 * self.scale), top + self.DH - int(26 * self.scale),
+                         width, "Focus window", "focus", s)
 
     def draw_button(self, x, y, w, label, action, s, h=None):
         c = self.canvas
@@ -1166,8 +1163,6 @@ class Panel:
                 chime.play("green", self.volume, self.sound)
             elif action == "focus":
                 self.open_session(s)
-            elif action == "dismiss":
-                self.delete_session(s.get("session_id"))
             else:
                 row = self.row_at(ev.y)
                 if row:
@@ -1215,11 +1210,6 @@ class Panel:
         else:
             self.toast("window not found - session may have moved")
 
-    def on_middle_click(self, ev):
-        s = self.row_at(ev.y)
-        if s:
-            self.delete_session(s.get("session_id"))
-
     def on_right_click(self, ev):
         try:
             # A borderless window may not hold focus; the menu needs it to
@@ -1262,25 +1252,6 @@ class Panel:
             text = text[:31] + "…"
         self._toast = (text, time.time() + 2.0)
         self.draw()
-
-    # --- server actions -----------------------------------------------------
-
-    def request(self, path, method="GET"):
-        def work():
-            try:
-                req = urllib.request.Request(SERVER + path, method=method)
-                urllib.request.urlopen(req, timeout=2).read()
-            except Exception:
-                pass
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def delete_session(self, sid):
-        if sid:
-            self.request("/sessions/" + str(sid), "DELETE")
-
-    def clear_sessions(self):
-        self.request("/sessions", "DELETE")
 
     # --- menu ---------------------------------------------------------------
 
