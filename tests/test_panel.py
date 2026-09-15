@@ -48,6 +48,10 @@ def panel():
     p = _shared["p"]
     # Transient UI state does not survive between tests. Amber banners in
     # particular are sticky by design and would cover later tests' rows.
+    # Including the connection: rows are drawn as unknown while the server is
+    # away, so a test that dropped the connection would leave every later one
+    # looking at dark lamps.
+    p.connected = True
     p.banners.clear()
     p.anim.clear()
     p._chime_armed.clear()
@@ -1250,3 +1254,99 @@ def test_answering_the_prompt_clears_it_too():
     finally:
         p.banners.clear()
         p.sounds = True
+
+
+# --- saying what it does not know -------------------------------------------
+
+
+def lit_lamps(p):
+    """Which of the three lamps are drawn lit, by fill colour.
+
+    The header's connection dot is drawn in the same green, so anything up in
+    the header bar is not a lamp.
+    """
+    lit = []
+    on = {colour for colour, _halo in p.LIGHTS.values()}
+    for item in p.canvas.find_all():
+        if p.canvas.type(item) != "oval":
+            continue
+        if p.canvas.itemcget(item, "fill") not in on:
+            continue
+        if not p.collapsed and p.canvas.coords(item)[3] <= p.HH:
+            continue
+        lit.append(p.canvas.itemcget(item, "fill"))
+    return lit
+
+
+def test_an_unknown_state_lights_no_lamp():
+    """A session Claude Code lists but that has never reported: we know it is
+    running, not what it is doing. Green would claim it had finished."""
+    p = panel()
+    p.on_snapshot(snapshot([session(0, state="green")]))
+    ok(lit_lamps(p), "a known state lights a lamp")
+    p.on_snapshot(snapshot([session(0, state="unknown")]))
+    p.anim.clear()
+    p.draw()
+    eq(lit_lamps(p), [], "nothing may be lit for a state we do not know")
+
+
+def test_a_disconnected_panel_admits_it_instead_of_showing_old_lamps():
+    """The reported bug: with the server gone the panel kept showing the last
+    states it had - a confident green for a session that had since ended."""
+    p = panel()
+    p.on_snapshot(snapshot([session(0, state="red"), session(1, state="orange")]))
+    ok(lit_lamps(p), "lit while connected")
+
+    p.q.put(("connected", False))
+    p.pump()
+    p.draw()
+    eq(lit_lamps(p), [], "every lamp goes out when the feed does")
+    ok(any("offline" in t for t in texts(p)), "and it says so: %r" % texts(p))
+
+    p.q.put(("connected", True))
+    p.pump()
+    p.on_snapshot(snapshot([session(0, state="red")]))
+    ok(lit_lamps(p), "the lamps come back with the connection")
+
+
+def test_the_collapsed_badge_goes_dark_too():
+    p = panel()
+    p.on_snapshot(snapshot([session(0, state="green")]))
+    try:
+        p.collapsed = True
+        p.draw()
+        ok(lit_lamps(p), "the badge shows the worst state while connected")
+        p.connected = False
+        p.draw()
+        eq(lit_lamps(p), [], "a badge with no feed behind it must not glow")
+    finally:
+        p.collapsed = False
+        p.connected = True
+        p.draw()
+
+
+def test_the_worst_state_of_nothing_known_is_not_green():
+    p = panel()
+    p.sessions = [{"state": "unknown"}, {"state": "unknown"}]
+    eq(p.worst_state(), "unknown", "green would say everything had finished")
+    p.sessions = [{"state": "unknown"}, {"state": "red"}]
+    eq(p.worst_state(), "red", "a state we do know still wins")
+
+
+def test_a_keep_alive_is_not_mistaken_for_a_snapshot():
+    """The server's ping carries a data line of its own. Reading it as a
+    snapshot would empty the panel every fifteen seconds."""
+    stream = [b"event: ping\n", b"data: {}\n", b"\n",
+              b'data: {"sessions": []}\n', b"\n",
+              b"event: ping\n", b"data: {}\n", b"\n",
+              b'data: {"sessions": [1]}\n', b"\n"]
+    got = [b for b in P.Feed.snapshots(stream) if b]
+    eq(got, ['{"sessions": []}', '{"sessions": [1]}'],
+       "only the real snapshots may get through")
+
+
+def test_the_stream_reader_yields_once_per_line():
+    """The caller checks for shutdown between yields; a parser that only spoke
+    up for snapshots would leave it blocked through a quiet stream."""
+    stream = [b"event: ping\n", b"data: {}\n", b"\n"]
+    eq(list(P.Feed.snapshots(stream)), [None, None, None])

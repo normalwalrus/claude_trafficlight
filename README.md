@@ -39,10 +39,11 @@ Then open **http://localhost:8787**.
 
 **Restart any Claude Code sessions you already have open.** Sessions that were
 running before you installed it *do* appear straight away — the panel reads
-Claude Code's own list of live sessions and shows them green, with their token
-figures read from their transcripts. But hooks are only read when a session
-starts, so those sessions will not change colour as they work until you restart
-them. Anything you open afterwards behaves fully from the start.
+Claude Code's own list of live sessions — with their token figures read from
+their transcripts, and no lamp lit, because all that is known about them is
+that they are running. But hooks are only read when a session starts, so those
+sessions will not light up as they work until you restart them. Anything you
+open afterwards behaves fully from the start.
 
 That is the whole install. On startup the container copies its hook payload
 into your `~/.claude/` and registers it in `settings.json` itself, so:
@@ -125,6 +126,10 @@ Host                                Docker
 │ Claude Code hooks│ ─────────────► │ status server│
 │  + token reader  │                │   :8787      │
 └──────────────────┘                │  (FastAPI)   │
+┌──────────────────┐   POST /live   │              │
+│ session watcher  │ ─────────────► │              │
+│  (are they alive)│                │              │
+└──────────────────┘                │              │
 ┌──────────────────┐   SSE /stream  │              │
 │ panel (native or │ ◄───────────── │  serves the  │
 │  browser)        │                │  web panel   │
@@ -135,6 +140,9 @@ Host                                Docker
   `~/.claude/settings.json`. Never blocks Claude: 1s timeout, all errors
   swallowed, always exits 0. About 90 ms per invocation, and roughly 190 ms
   from Claude starting work to the lamp being lit.
+* **Session watcher** — `hooks/session_watch.py`, started by the hook and
+  gone when the sessions are. The one thing the container cannot do for
+  itself: check that the process behind a registry entry is still running.
 * **Token reader** — `hooks/transcript.py` tails the session's transcript
   JSONL, keeping a byte offset per session so each hook parses only what was
   appended (~10 ms, not a full re-read of a multi-megabyte file).
@@ -156,6 +164,7 @@ Host                                Docker
 | `Notification`     | orange | needs permission, or asked you a question   |
 | `Stop`             | green  | turn complete                              |
 | `SessionEnd`       | —      | row removed                                |
+| *(none yet)*       | dark   | listed by Claude Code, has not reported    |
 
 Claude Code fires `Notification` for twelve different things, and only four of
 them mean it is blocked on you. The rest — it has been idle a minute, you
@@ -170,13 +179,51 @@ mounts, so the panel reads liveness rather than guessing it from hook traffic:
 
 * A session is **adopted** onto the panel as soon as Claude Code lists it, even
   if it has never fired a hook — including after the container restarts. Its
-  token figures are read straight from its transcript.
+  token figures are read straight from its transcript. Until it does fire one,
+  **no lamp is lit**: we know it is running, not whether it is working, waiting
+  or finished, and a green lamp would claim it had finished.
 * A row stays for as long as the session exists, however long it sits idle.
 * A row disappears when the session does — you close the editor tab, or quit
   Claude — and immediately on a clean exit via the `SessionEnd` hook.
 
 The `STALE_SECONDS` timeout survives only as the fallback for when that
 registry cannot be read at all.
+
+### Knowing a session has really gone
+
+A registry file is written when a session starts and deleted when it ends — if
+Claude Code gets the chance. A session that is *killed* rather than quit (you
+close the editor window, the terminal goes away, the machine sleeps) never runs
+its shutdown, so the file is left behind, and nothing ever rewrites it:
+`updatedAt` is not a heartbeat, only a record of the last status change. From
+inside the container a dead session is therefore indistinguishable from one you
+have had open all morning — which is why a closed session used to sit on the
+panel until Claude Code next tidied up after itself.
+
+Only the host can tell the two apart, so `hooks/session_watch.py` does. It is
+started by the hook — never by you — checks every few seconds that the process
+behind each registry entry is still running (and is still the same process:
+pids get reused), and posts the survivors to `POST /live`. Rows they do not
+cover go at once.
+
+It is deliberately short-lived: one copy at a time, guarded by a lock file in
+the temp directory, and it exits when the sessions are gone, when the server
+stops answering for three minutes, or after twelve hours. Closing Claude leaves
+nothing running.
+
+`CLAUDE_LIGHT_WATCH=0` turns it off, at the price of closed sessions lingering
+on the panel. It also never starts on a host with no Python, where the hooks
+fall back to `curl`.
+
+### When the server is not there
+
+If the container stops, or the connection drops, **the panel says so rather
+than leaving the last picture up**: every lamp goes out, the rows fade, the
+header reads *not connected* and the timers are replaced with `—`. The rows on
+screen are only the last thing it was told, which may have stopped being true
+some time ago; a confident green for a session that has since ended is exactly
+the failure the lights exist to prevent. Both panels reconnect on their own and
+relight as soon as the server answers.
 
 ## Using it
 
@@ -321,6 +368,8 @@ docker compose logs | grep bootstrap   # what the hook install did
 docker compose logs -f        # server logs
 python scripts/demo.py        # drive three fake sessions through every state
 curl http://127.0.0.1:8787/sessions
+curl http://127.0.0.1:8787/healthz     # "host_watcher": is anything checking
+                                       # that the listed sessions are alive?
 ```
 
 ## Tests
@@ -330,7 +379,7 @@ python tests/run_all.py            # everything
 python tests/run_all.py panel hook # just those modules
 ```
 
-230 tests, zero dependencies. The server tests skip unless `fastapi` is
+264 tests, zero dependencies. The server tests skip unless `fastapi` is
 importable;
 install `server/requirements.txt` into a venv to run them too. Nothing in the
 suite touches your real `settings.json`, port 8787, or the running panel.
@@ -346,8 +395,9 @@ suite touches your real `settings.json`, port 8787, or the running panel.
   `python install.py`) re-stages it.
 * Only paths inside the mounted `~/.claude` are ever read from a hook payload;
   anything else is refused.
-* Session state is in memory. Restarting the container empties the panel until
-  each session reports its next event.
+* Session state is in memory. Restarting the container re-reads Claude Code's
+  registry, so the rows come straight back - with no lamp lit until each
+  session reports its next event.
 * The hook launcher caches which interpreter it found in
   `~/.claude/claude-trafficlight/interpreter.txt`; the next `docker compose up`
   reads that and registers Python directly, dropping the shell from the chain.

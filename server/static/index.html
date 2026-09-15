@@ -279,6 +279,20 @@
     padding: 28px 14px; text-align: center;
     color: var(--dim); font-size: 13px;
   }
+
+  /* Nothing is arriving any more, so nothing on screen can be trusted: the
+     rows are the last thing we were told, which may have been a while ago.
+     Every lamp goes out and the rows fade, because a panel that keeps showing
+     a confident green for a session that ended - or one that is working right
+     now - is worse than no panel at all. */
+  body.offline li { opacity: .5; }
+  body.offline .signal i {
+    background: var(--lamp-off) !important;
+    box-shadow: inset 0 0 0 1px var(--bezel),
+                inset 0 2px 3px rgba(0,0,0,.6) !important;
+    animation: none !important;
+  }
+  body.offline .conn { background: var(--red); }
   footer {
     margin-top: 16px; padding: 0 4px;
     color: var(--header); font-size: 11px; line-height: 1.6;
@@ -348,6 +362,8 @@
   let clockOffset = 0;          // server clock minus ours
   let prevState = new Map();
   let seenFirst = false;        // suppresses a chime storm on (re)connect
+  let connected = false;        // false = the rows on screen are only history
+  let lastFrame = 0;            // when the server last said anything at all
   let audio = null;
   let pipWindow = null;         // the popped-out window, when there is one
 
@@ -526,7 +542,11 @@
   function render() {
     const now = Date.now() / 1000 + clockOffset;
     emptyEl.hidden = sessions.length > 0;
-    countEl.textContent = sessions.length
+    emptyEl.textContent = connected
+      ? "Waiting for Claude sessions…"
+      : "Not connected — is the server running? docker compose up -d";
+    countEl.textContent = !connected ? "not connected"
+      : sessions.length
       ? sessions.length + (sessions.length === 1 ? " session" : " sessions")
       : "no sessions";
 
@@ -566,8 +586,11 @@
       const running = Number((s.usage || {}).agents) || 0;
       li.querySelector(".badge").textContent = running ? "⚙" + running : "";
       const elapsed = now - (Number(s.since) || now);
-      li.querySelector(".time").textContent =
-        s.state === "green" && elapsed > 300 ? "idle" : fmt(elapsed);
+      // With the feed down, "how long it has been in this state" is only how
+      // long ago we stopped hearing about it. Say nothing rather than that.
+      li.querySelector(".time").textContent = !connected ? "—"
+        : s.state === "unknown" ? ""
+        : s.state === "green" && elapsed > 300 ? "idle" : fmt(elapsed);
       renderDetail(li, s);
     }
 
@@ -585,7 +608,11 @@
 
   function renderDetail(li, s) {
     const u = (s.usage && typeof s.usage === "object") ? s.usage : {};
-    const activity = s.state === "red"
+    const activity = !connected
+      ? "Not connected — last seen state"
+      : s.state === "unknown"
+      ? "Running — no events yet"
+      : s.state === "red"
       ? "Working" + (s.tool ? "  ·  " + s.tool : "")
       : s.state === "orange" ? (s.detail || "Waiting for you") : "Idle";
     li.querySelector(".activity").textContent = activity;
@@ -746,19 +773,55 @@
   }
 
   // --- feed
+  function setConnected(value) {
+    if (connected === value) return;
+    connected = value;
+    connEl.classList.toggle("ok", connected);
+    document.body.classList.toggle("offline", !connected);
+    if (!connected) {
+      // Whatever is on screen is now history. Nothing may chime or announce
+      // off the back of it, and the next snapshot counts as a first one.
+      seenFirst = false;
+      for (const id of Array.from(bannerTimers.keys())) clearBanner(id);
+      for (const armed of armedChimes.values()) clearTimeout(armed.timer);
+      armedChimes.clear();
+    }
+    render();
+    if (pipWindow && !pipWindow.closed) {
+      pipWindow.document.body.classList.toggle("offline", !connected);
+    }
+  }
+
+  let feed = null;
   function connect() {
-    const es = new EventSource("stream");
-    es.onopen = () => connEl.classList.add("ok");
+    if (feed) { try { feed.close(); } catch (_) { /* already gone */ } }
+    const es = feed = new EventSource("stream");
+    es.onopen = () => { lastFrame = Date.now(); setConnected(true); };
+    es.addEventListener("ping", () => { lastFrame = Date.now(); });
     es.onmessage = ev => {
+      lastFrame = Date.now();
+      setConnected(true);
       try { onSnapshot(JSON.parse(ev.data)); } catch (_) { /* ignore a bad frame */ }
     };
     es.onerror = () => {
-      connEl.classList.remove("ok");
-      seenFirst = false;
+      setConnected(false);
       // EventSource retries on its own; this only covers a hard close.
       if (es.readyState === EventSource.CLOSED) setTimeout(connect, 2000);
     };
   }
+
+  // A dropped connection does not always raise an error - a container killed
+  // mid-stream can leave a socket that is open and silent. The server pings
+  // every 15s, so silence for far longer than that means the same thing as an
+  // error, and the panel must stop presenting stale rows as current.
+  const SILENCE_LIMIT = 50000;
+  setInterval(() => {
+    if (!feed) return;
+    if (lastFrame && Date.now() - lastFrame > SILENCE_LIMIT) {
+      setConnected(false);
+      connect();
+    }
+  }, 5000);
 
   // --- settings
   const gearEl   = document.getElementById("gear");
@@ -856,6 +919,10 @@
     }
     stylesFor(pipWindow.document);
     pipWindow.document.body.classList.add("pip");
+    // The floating window is the one people watch, so it has to carry the
+    // "nothing is arriving" look from the moment it opens, not from the next
+    // time the connection changes.
+    pipWindow.document.body.classList.toggle("offline", !connected);
     pipWindow.document.body.appendChild(panelEl);
     applyTheme(theme);   // the new document starts on the :root fallbacks
     pipWindow.addEventListener("pagehide", () => {

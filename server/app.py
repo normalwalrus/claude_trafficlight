@@ -59,6 +59,30 @@ REGISTRY_TTL = int(os.environ.get("REGISTRY_TTL", "0"))
 NEW_SESSION_GRACE = int(os.environ.get("NEW_SESSION_GRACE", "90"))
 MISSING_GRACE = int(os.environ.get("MISSING_GRACE", "60"))
 
+# The registry file is written when a session starts and deleted when it ends -
+# if it gets the chance. A session that is killed rather than quit (you close
+# the editor window, the terminal goes away) leaves its file behind, and
+# nothing in it ever changes again, so from in here a dead session looks
+# exactly like one you have had open all morning.
+#
+# The host-side watcher settles it: it checks the pids and posts the sessions
+# that really are running to /live. While those reports keep coming they are
+# the truth, and a row they do not cover goes at once rather than waiting out
+# MISSING_GRACE. A report older than this is ignored (the watcher polls every
+# five seconds, so this is many missed reports, not one).
+HOST_REPORT_TTL = int(os.environ.get("HOST_REPORT_TTL", "45"))
+
+# How long a session that ended stays un-adoptable. SessionEnd removes the row
+# immediately; Claude Code deletes the registry file a moment later, and
+# without this the next sweep would put the row straight back.
+ENDED_TOMBSTONE = 120
+
+# What an adopted row says it is doing: nothing, honestly. We know Claude Code
+# lists the session, which is not the same as knowing whether it is working,
+# waiting or finished - and showing "idle" for a session that is mid-turn is
+# exactly the lie the panel must not tell. The first hook replaces it.
+ADOPTED_STATE = "unknown"
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "hookpayload"))
 try:
     import transcript as _transcript
@@ -203,6 +227,13 @@ class Event(BaseModel):
     usage: Optional[Dict[str, Any]] = None
 
 
+class LiveReport(BaseModel):
+    """What the host-side watcher sees: the sessions whose process is alive."""
+
+    live: List[str] = []
+    interval: Optional[float] = None
+
+
 class Store:
     def __init__(self) -> None:
         self.sessions: Dict[str, Dict[str, Any]] = {}
@@ -210,6 +241,26 @@ class Store:
         self.revision = 0
         # sid -> when it first went missing from Claude Code's registry
         self.missing_since: Dict[str, float] = {}
+        # The last host report: which sessions are really running, and when we
+        # were told. None until a watcher reaches us at all.
+        self.host_live: Optional[Set[str]] = None
+        self.host_live_at = 0.0
+        # sid -> when it ended, so a registry file that outlives the session by
+        # a moment cannot resurrect the row.
+        self.ended: Dict[str, float] = {}
+
+    def host_live_ids(self, now: Optional[float] = None) -> Optional[Set[str]]:
+        """The host's verdict, or None when it is missing or too old to use."""
+        now = time.time() if now is None else now
+        if self.host_live is None:
+            return None
+        if now - self.host_live_at > HOST_REPORT_TTL:
+            return None
+        return self.host_live
+
+    def set_host_live(self, ids: List[str]) -> None:
+        self.host_live = {str(i) for i in ids}
+        self.host_live_at = time.time()
 
     def snapshot(self) -> Dict[str, Any]:
         now = time.time()
@@ -255,8 +306,13 @@ class Store:
         if state is None:
             self.sessions.pop(ev.session_id, None)
             self.missing_since.pop(ev.session_id, None)
+            self.ended[ev.session_id] = now
             self.publish()
             return
+
+        # It reported, so it is not over after all (a resumed session keeps its
+        # id). Clear the tombstone or the row could never be adopted again.
+        self.ended.pop(ev.session_id, None)
 
         s = self.sessions.get(ev.session_id)
         if s is None:
@@ -310,8 +366,12 @@ class Store:
         so it belongs on the panel.
         """
         added = False
+        now_ = time.time()
+        for sid, at in list(self.ended.items()):
+            if now_ - at > ENDED_TOMBSTONE:
+                self.ended.pop(sid, None)
         for sid, entry in live.items():
-            if sid in self.sessions:
+            if sid in self.sessions or sid in self.ended:
                 continue
             cwd = str(entry.get("cwd") or "")
             project = os.path.basename(cwd.replace("\\", "/").rstrip("/")) or "claude"
@@ -324,9 +384,9 @@ class Store:
                 "cwd": cwd,
                 "pid": entry.get("pid"),
                 "hwnd": 0,
-                # We know it is running, not what it is doing. Green is the
-                # honest default: nothing is waiting on you.
-                "state": "green",
+                # We know it is running, not what it is doing - and green
+                # would claim it had finished, while it may be mid-turn.
+                "state": ADOPTED_STATE,
                 "since": started,
                 "started": started,
                 "updated": now,
@@ -345,35 +405,48 @@ class Store:
         Hook traffic is not a liveness signal: a session you leave open in your
         editor fires nothing at all between turns, so a row must never be
         removed just because it has been quiet. Claude Code's own registry says
-        what is running, and a row is removed only once the session has left it
-        (you closed the tab, or quit Claude).
+        what is running, and a row is removed once the session has left it (you
+        closed the tab, or quit Claude) - or, when the host-side watcher is
+        reporting, once the process behind the entry is gone. A killed session
+        leaves its registry file behind, so without that second check a row
+        could outlive the session by hours.
 
-        The inactivity timeout survives solely as the fallback for when that
-        registry cannot be read at all - without the mount there is nothing
-        else to go on.
+        The inactivity timeout survives solely as the fallback for when neither
+        can be read - without the mount there is nothing else to go on.
         """
         now = time.time()
         live = live_sessions()
+        host = self.host_live_ids(now)
         dead = []
+
+        # The registry says which sessions exist; the host says which of them
+        # are still running. Only entries that pass both are live.
+        if live is not None and host is not None:
+            live = {sid: entry for sid, entry in live.items() if sid in host}
 
         if live is not None and self.adopt(live):
             self.publish()
 
-        if live is None:
+        if live is None and host is None:
             cutoff = now - STALE_SECONDS
             for sid, s in self.sessions.items():
                 if s["updated"] < cutoff:
                     dead.append(sid)
         else:
+            # A host report is a checked fact, not a scan that can race, and
+            # the watcher already sits out a sweep before dropping anything.
+            # Waiting another minute on top of that is just a row that lies.
+            grace = 0 if host is not None else MISSING_GRACE
+            known = set(live) if live is not None else set(host or ())
             for sid, s in self.sessions.items():
-                if sid in live:
+                if sid in known:
                     self.missing_since.pop(sid, None)
                     continue
                 # Too new to have been registered yet.
                 if now - s.get("started", now) < NEW_SESSION_GRACE:
                     continue
                 first = self.missing_since.setdefault(sid, now)
-                if now - first >= MISSING_GRACE:
+                if now - first >= grace:
                     dead.append(sid)
 
         for sid in dead:
@@ -438,7 +511,34 @@ async def themes_json() -> Response:
 
 @app.get("/healthz")
 async def healthz() -> Dict[str, Any]:
-    return {"ok": True, "sessions": len(store.sessions), "stale_seconds": STALE_SECONDS}
+    report = store.host_live_ids()
+    return {
+        "ok": True,
+        "sessions": len(store.sessions),
+        "stale_seconds": STALE_SECONDS,
+        # Whether anything is checking that the registered sessions are alive,
+        # which is the difference between a closed session disappearing in
+        # seconds and it sitting there until Claude Code is next started.
+        "host_watcher": report is not None,
+        "host_live": sorted(report) if report is not None else None,
+        "host_report_age": (round(time.time() - store.host_live_at, 1)
+                            if store.host_live is not None else None),
+    }
+
+
+@app.post("/live")
+async def post_live(report: LiveReport) -> Dict[str, Any]:
+    """The host-side watcher reporting which sessions still have a process.
+
+    Nothing inside the container can tell a killed session from an idle one:
+    Claude Code's registry file outlives the session it describes and is never
+    rewritten afterwards. This is the only signal that can, so acting on it at
+    once - rather than on the next sweep - is what makes a closed session
+    disappear while you are still looking at the panel.
+    """
+    store.set_host_live(report.live)
+    store.reap()
+    return {"ok": True, "sessions": len(store.sessions)}
 
 
 @app.post("/event")
@@ -538,7 +638,11 @@ async def stream() -> StreamingResponse:
                 try:
                     payload = await asyncio.wait_for(q.get(), timeout=HEARTBEAT_INTERVAL)
                 except asyncio.TimeoutError:
-                    yield ": ping\n\n"
+                    # A named event, not a bare comment: a panel cannot see
+                    # comments, so it has no way to tell a quiet server from a
+                    # dead one - and a dead one leaves it showing rows that
+                    # stopped being true some time ago.
+                    yield "event: ping\ndata: {}\n\n"
                     continue
                 yield f"data: {payload}\n\n"
         finally:

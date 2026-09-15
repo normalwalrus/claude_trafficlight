@@ -51,7 +51,8 @@ SETTINGS = os.path.join(CLAUDE_HOME, "settings.json")
 # break the lights the moment the repo is moved, renamed or deleted - and the
 # container installs the same payload without knowing where the host repo is.
 PAYLOAD_DIRNAME = "claude-trafficlight"
-PAYLOAD_FILES = ("claude_light_hook.py", "transcript.py")
+PAYLOAD_FILES = ("claude_light_hook.py", "transcript.py",
+                 "session_watch.py")
 HOOK_NAME = "claude_light_hook.py"
 
 PAYLOAD_DIR = os.path.join(CLAUDE_HOME, PAYLOAD_DIRNAME)

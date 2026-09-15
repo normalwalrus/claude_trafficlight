@@ -181,6 +181,29 @@ class Feed(threading.Thread):
         self.out = out
         self.stopped = threading.Event()
 
+    @staticmethod
+    def snapshots(lines):
+        """Snapshot bodies from a raw SSE stream, one yield per line read.
+
+        Yields None for a line that is not a snapshot, so the caller still gets
+        to check whether it should stop between lines. The `event:` field is
+        what keeps the keep-alive out: it carries a data line of its own, and
+        taking that for a snapshot would empty the panel every fifteen seconds.
+        """
+        kind = ""
+        for raw in lines:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line:
+                kind = ""              # a blank line ends one event
+                yield None
+                continue
+            if line.startswith("event:"):
+                kind = line[6:].strip()
+                yield None
+                continue
+            body = line[5:].strip() if line.startswith("data:") else ""
+            yield body if (body and kind in ("", "message")) else None
+
     def run(self):
         while not self.stopped.is_set():
             try:
@@ -189,14 +212,11 @@ class Feed(threading.Thread):
                 )
                 with urllib.request.urlopen(req, timeout=40) as resp:
                     self.out.put(("connected", True))
-                    for raw in resp:
+                    for body in self.snapshots(resp):
                         if self.stopped.is_set():
                             return
-                        line = raw.decode("utf-8", "replace").strip()
-                        if line.startswith("data:"):
-                            body = line[5:].strip()
-                            if body:
-                                self.out.put(("snapshot", body))
+                        if body:
+                            self.out.put(("snapshot", body))
             except Exception:
                 pass
             self.out.put(("connected", False))
@@ -488,6 +508,12 @@ class Panel:
                     self.connected = bool(payload)
                     if not self.connected:
                         self.seen_first_snapshot = False
+                        # The rows on screen are the last thing we were told,
+                        # not what is happening now. Nothing may still be
+                        # fading or announcing as though it were live.
+                        self.anim.clear()
+                        self.banners.clear()
+                        self.draw()
                 elif kind == "snapshot":
                     self.on_snapshot(payload)
         except queue.Empty:
@@ -752,7 +778,11 @@ class Panel:
     def draw_row(self, index, top, s, now, expanded=False):
         c = self.canvas
         sid = s.get("session_id", "")
-        state = s.get("state", "green")
+        # With the feed down every lamp goes out: "unknown" lights none of the
+        # three. A panel confidently showing green for a session that ended
+        # while the server was away is worse than one that admits it cannot
+        # see. Same for a row Claude Code lists but that has never reported.
+        state = s.get("state", "green") if self.connected else "unknown"
         cy = top + self.RH // 2
         self.row_hitboxes.append((top, top + self.RH, s))
 
@@ -768,7 +798,14 @@ class Panel:
         fade = banner[2] if banner else 0.0
 
         elapsed = now - as_float(s.get("since"), now)
-        stamp = "idle" if (state == "green" and elapsed > 300) else fmt_elapsed(elapsed)
+        if not self.connected:
+            stamp = "—"          # how long ago we stopped hearing, not a state
+        elif state == "unknown":
+            stamp = ""
+        elif state == "green" and elapsed > 300:
+            stamp = "idle"
+        else:
+            stamp = fmt_elapsed(elapsed)
 
         label = str(s.get("project") or "claude")
         if len(label) > PROJECT_CHARS:
@@ -784,8 +821,10 @@ class Panel:
                     detail = detail[: room - 1] + "…"
                 label = label + "  · " + detail
 
-        label_id = c.create_text(self.TX, cy, anchor="w", text=label,
-                                 fill=mix(self.FG, self.BG, fade), font=self.f(9))
+        label_id = c.create_text(
+            self.TX, cy, anchor="w", text=label,
+            fill=mix(self.FG if self.connected else self.FG_DIM, self.BG, fade),
+            font=self.f(9))
 
         # Subagents run inside their parent session and never get a row of
         # their own, so without this there is no sign from the collapsed row
@@ -1006,7 +1045,9 @@ class Panel:
         for name in ("orange", "red", "green"):
             if name in states:
                 return name
-        return "green"
+        # Only sessions we know nothing about: the badge stays dark rather
+        # than claiming everything has finished.
+        return "unknown" if states else "green"
 
     def draw_collapsed(self):
         c = self.canvas
@@ -1023,7 +1064,7 @@ class Panel:
         for j, name in enumerate(ORDER):
             cx = int(13 * s) + j * int(13 * s)
             on, glow = self.LIGHTS[name]
-            if name == state and self.sessions:
+            if name == state and self.sessions and self.connected:
                 c.create_oval(cx - r - 2, cy - r - 2, cx + r + 2, cy + r + 2,
                               fill=glow, outline="")
                 c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=on, outline="")
@@ -1140,7 +1181,11 @@ class Panel:
         # what it is doing right now
         tool = str(s.get("tool") or "")
         detail = str(s.get("detail") or "")
-        if state == "red":
+        if not self.connected:
+            activity = "Not connected · last seen state"
+        elif state == "unknown":
+            activity = "Running · no events yet"
+        elif state == "red":
             activity = "Working" + ("  ·  " + tool if tool else "")
         elif state == "orange":
             activity = detail or "Waiting for you"

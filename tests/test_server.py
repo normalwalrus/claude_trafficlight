@@ -593,7 +593,9 @@ def test_running_sessions_are_adopted_even_if_they_never_report():
         row = app.store.sessions.get("never-spoke")
         ok(row, "a running session must be adopted: %r" % app.store.sessions)
         eq(row["project"], "quiet-one", "project comes from the registry cwd")
-        eq(row["state"], "green", "we know it is running, not what it is doing")
+        eq(row["state"], "unknown",
+           "we know it is running, not what it is doing - and green would "
+           "claim it had finished while it may be mid-turn")
         eq(row["adopted"], True, "marked as adopted")
         eq(row["pid"], 4321, "pid carried over")
     finally:
@@ -649,3 +651,172 @@ def test_the_fallback_classifier_holds_if_the_hook_payload_is_missing():
     finally:
         app._hook = saved
         app.store.sessions.clear()
+
+
+# --- the host's verdict on what is really running ----------------------------
+
+
+def _reset(app):
+    app.store.sessions.clear()
+    app.store.missing_since.clear()
+    app.store.ended.clear()
+    app.store.host_live = None
+    app.store.host_live_at = 0.0
+
+
+def test_a_killed_session_goes_even_though_its_registry_file_remains():
+    """The reported bug. Close the editor window and Claude Code never gets to
+    delete its registry entry, and nothing ever rewrites it - so from in here
+    the dead session looks exactly like one left open. The host says which
+    pids are still running; that is what settles it."""
+    app = _srv()
+    mount = _registry({"killed": None, "open": None})
+    saved = (app.HOST_CLAUDE, app.NEW_SESSION_GRACE)
+    app.HOST_CLAUDE = mount
+    app.NEW_SESSION_GRACE = 0
+    try:
+        _reset(app)
+        _seed(app, "killed", age_seconds=30)
+        _seed(app, "open", age_seconds=30)
+        app.store.reap()
+        ok("killed" in app.store.sessions, "the file alone keeps it there")
+
+        app.store.set_host_live(["open"])     # the watcher checked the pids
+        app.store.reap()
+        ok("killed" not in app.store.sessions,
+           "a session whose process is gone must not survive its own file")
+        ok("open" in app.store.sessions, "the one still running stays")
+    finally:
+        app.HOST_CLAUDE, app.NEW_SESSION_GRACE = saved
+        _reset(app)
+
+
+def test_a_killed_session_is_not_adopted_back():
+    """Removing the row is not enough: the file is still there, so the next
+    sweep would adopt it straight back."""
+    app = _srv()
+    mount = _registry({"killed": None})
+    saved = app.HOST_CLAUDE
+    app.HOST_CLAUDE = mount
+    try:
+        _reset(app)
+        app.store.set_host_live([])
+        app.store.reap()
+        eq(app.store.sessions, {}, "a dead entry must not become a row: %r"
+           % app.store.sessions)
+    finally:
+        app.HOST_CLAUDE = saved
+        _reset(app)
+
+
+def test_a_host_report_goes_stale_rather_than_ruling_for_ever():
+    """The watcher exits with the last session. Its final word must not keep
+    reaping rows for the sessions you open afterwards."""
+    app = _srv()
+    mount = _registry({"later": None})
+    saved = (app.HOST_CLAUDE, app.NEW_SESSION_GRACE)
+    app.HOST_CLAUDE = mount
+    app.NEW_SESSION_GRACE = 0
+    try:
+        _reset(app)
+        app.store.set_host_live([])
+        app.store.host_live_at = time.time() - app.HOST_REPORT_TTL - 1
+        eq(app.store.host_live_ids(), None, "an old report is no report")
+        app.store.reap()
+        ok("later" in app.store.sessions,
+           "with no current report the registry decides again")
+    finally:
+        app.HOST_CLAUDE, app.NEW_SESSION_GRACE = saved
+        _reset(app)
+
+
+def test_a_brand_new_session_survives_a_report_that_predates_it():
+    app = _srv()
+    mount = _registry({})
+    saved = (app.HOST_CLAUDE, app.NEW_SESSION_GRACE)
+    app.HOST_CLAUDE = mount
+    app.NEW_SESSION_GRACE = 90
+    try:
+        _reset(app)
+        _seed(app, "fresh", age_seconds=0, started=1)
+        app.store.set_host_live([])
+        app.store.reap()
+        ok("fresh" in app.store.sessions,
+           "a session that has only just started has not registered yet")
+    finally:
+        app.HOST_CLAUDE, app.NEW_SESSION_GRACE = saved
+        _reset(app)
+
+
+def test_the_host_report_works_without_the_registry_mount():
+    """No mount means no adoption, but a row we heard from must still go when
+    the host says its process has ended."""
+    app = _srv()
+    saved = (app.HOST_CLAUDE, app.NEW_SESSION_GRACE, app.STALE_SECONDS)
+    app.HOST_CLAUDE = "/definitely/not/here"
+    app.NEW_SESSION_GRACE = 0
+    app.STALE_SECONDS = 99999
+    try:
+        _reset(app)
+        _seed(app, "gone", age_seconds=5)
+        _seed(app, "here", age_seconds=5)
+        app.store.set_host_live(["here"])
+        app.store.reap()
+        ok("gone" not in app.store.sessions, "the host's verdict still applies")
+        ok("here" in app.store.sessions)
+    finally:
+        app.HOST_CLAUDE, app.NEW_SESSION_GRACE, app.STALE_SECONDS = saved
+        _reset(app)
+
+
+def test_a_session_that_ended_is_not_resurrected_by_its_own_file():
+    """SessionEnd removes the row; Claude Code deletes the file a moment
+    later. In between, a sweep must not put the row back."""
+    app = _srv()
+    mount = _registry({"bye": None})
+    saved = app.HOST_CLAUDE
+    app.HOST_CLAUDE = mount
+    try:
+        _reset(app)
+        app.store.apply(app.Event(session_id="bye", event="Stop", project="bye"))
+        app.store.apply(app.Event(session_id="bye", event="SessionEnd",
+                                  project="bye"))
+        app.store.reap()
+        ok("bye" not in app.store.sessions,
+           "the row came back from the dead: %r" % app.store.sessions)
+    finally:
+        app.HOST_CLAUDE = saved
+        _reset(app)
+
+
+def test_a_resumed_session_can_be_adopted_again():
+    """The tombstone must not outlive its purpose: --resume keeps the id."""
+    app = _srv()
+    mount = _registry({"again": None})
+    saved = app.HOST_CLAUDE
+    app.HOST_CLAUDE = mount
+    try:
+        _reset(app)
+        app.store.apply(app.Event(session_id="again", event="SessionEnd",
+                                  project="again"))
+        app.store.apply(app.Event(session_id="again", event="SessionStart",
+                                  project="again"))
+        eq(app.store.sessions["again"]["state"], "green", "it is back")
+        app.store.sessions.clear()
+        app.store.reap()
+        ok("again" in app.store.sessions,
+           "a session that reported after ending is live again")
+    finally:
+        app.HOST_CLAUDE = saved
+        _reset(app)
+
+
+def test_the_live_endpoint_reports_what_it_is_watching():
+    app = _srv()
+    try:
+        _reset(app)
+        eq(app.store.host_live_ids(), None, "nothing reported yet")
+        app.store.set_host_live(["a", "b"])
+        eq(app.store.host_live_ids(), {"a", "b"}, "the last report stands")
+    finally:
+        _reset(app)

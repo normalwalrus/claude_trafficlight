@@ -58,9 +58,13 @@ def collector():
     return _server["url"]
 
 
-def run_hook(argv, stdin, url=None, timeout=20):
+def run_hook(argv, stdin, url=None, timeout=20, watch=False):
     env = dict(os.environ)
     env["CLAUDE_LIGHT_URL"] = url if url is not None else collector()
+    # The hook starts the liveness watcher, which outlives it on purpose. A
+    # test run must not leave background processes behind, so it is off unless
+    # the test is specifically about that.
+    env["CLAUDE_LIGHT_WATCH"] = "1" if watch else "0"
     t0 = time.time()
     proc = subprocess.run(
         [PY, HOOK] + list(argv), input=stdin, capture_output=True,

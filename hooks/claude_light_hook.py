@@ -317,6 +317,18 @@ def main() -> int:
         tool = str(payload.get("tool_name") or "")[:40]
         detail = tool
 
+    # Hooks are the only thing that runs on the host, so they are also the only
+    # chance to start the watcher that tells the server which sessions are
+    # still alive. Costs one stat once a watcher is up, which it is for every
+    # hook after the first.
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import session_watch
+
+        session_watch.ensure_running()
+    except Exception:
+        pass
+
     hwnd, owner_pid = cached_terminal(session_id, event)
     usage = read_usage(session_id, payload, event)
     body = {
