@@ -143,6 +143,13 @@ green only — going red is just Claude getting on with it — and a banner is
 dropped the moment that session changes again, so a row never keeps claiming it
 needs permission after you have answered.
 
+A sound only fires for a change you could actually see. Subagents run inside
+their parent's session, so their churn shows up as the parent changing state —
+an agent finishing makes the parent fire `Stop` (green) and immediately pick the
+work back up (red), and the green is gone before it reaches the screen. A chime
+is therefore held for 700ms and dropped if the state has already moved on, and a
+session with agents still running stays silent because it is not finished.
+
 Six alert sounds, all synthesised in memory (no audio files):
 
 | Sound | Character |
@@ -183,22 +190,27 @@ menu, and in the browser panel's header):
 | --- | --- |
 | **Daylight** | **Neon** |
 | <img src="docs/theme-daylight.png" width="300"> | <img src="docs/theme-neon.png" width="300"> |
-| **Terminal** | **Colour-safe** |
-| <img src="docs/theme-terminal.png" width="300"> | <img src="docs/theme-coloursafe.png" width="300"> |
+| **Terminal** | **High contrast** |
+| <img src="docs/theme-terminal.png" width="300"> | <img src="docs/theme-contrast.png" width="300"> |
 
 Plus **Midnight** (the default, shown at the top) and **Sepia**.
 
-**Colour-safe** exists because red/green is the worst possible pairing for the
-commonest forms of colour blindness. It separates the lamps by hue *and*
-brightness — blue, amber, pale cyan — so they stay distinguishable under
-deuteranopia and protanopia. Lamp *position* never changes in any theme: left
-is working, middle is waiting on you, right is done.
+**Every theme uses a true red, amber and green.** A theme may change how bright
+or how saturated a lamp is, but never which colour it is — a pink or a teal
+stops it reading as a traffic light at a glance. The test suite enforces this
+by checking each lamp's hue falls in the right band.
+
+Because hue alone therefore cannot help someone who cannot tell red from green,
+the other two cues carry that weight: lamp *position* never changes in any theme
+(left is working, middle is waiting on you, right is done), and **High contrast**
+additionally spreads the three lamps as far apart in brightness as those colours
+allow.
 
 Themes are defined once in `panel/themes.py` and exported to
 `server/static/themes.json`, so both panels stay identical. The test suite
-checks every theme defines every colour, that text keeps enough contrast
-against its background, and that a lit lamp is always clearly brighter than an
-unlit one.
+checks every theme defines every colour, that each lamp is a true red, amber or
+green, that text keeps enough contrast against its background, and that a lit
+lamp is always clearly brighter than an unlit one.
 
 The desktop panel stores these in `%APPDATA%\claude-trafficlight\panel.json`;
 the browser panel keeps its own in `localStorage`. Both read the same sound

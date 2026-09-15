@@ -91,24 +91,74 @@ def test_the_three_lamps_are_distinguishable_within_each_theme():
         eq(len(set(lit)), 3, "%s reuses a lamp colour: %r" % (name, lit))
 
 
-def test_the_colour_safe_theme_avoids_the_red_green_pairing():
-    """Red/green is the worst possible pairing for the commonest forms of
-    colour blindness. This theme separates the lamps by hue *and* brightness."""
-    t = themes.get("colourblind")
+def _hue(colour):
+    """Hue in degrees, 0-360."""
+    import colorsys
+    r = int(colour[1:3], 16) / 255.0
+    g = int(colour[3:5], 16) / 255.0
+    b = int(colour[5:7], 16) / 255.0
+    return colorsys.rgb_to_hsv(r, g, b)[0] * 360.0
+
+
+def _saturation(colour):
+    import colorsys
+    r = int(colour[1:3], 16) / 255.0
+    g = int(colour[3:5], 16) / 255.0
+    b = int(colour[5:7], 16) / 255.0
+    return colorsys.rgb_to_hsv(r, g, b)[1]
+
+
+# A real traffic light is red, amber and green. A theme may change how bright
+# or how saturated a lamp is, but not which colour it is.
+HUE_BANDS = {
+    "red": [(345, 360), (0, 20)],
+    "orange": [(30, 55)],
+    "green": [(90, 155)],
+}
+
+
+def test_every_lamp_is_a_true_red_amber_or_green():
+    """No theme may recolour the lamps. Pink instead of red, or teal instead of
+    green, stops it reading as a traffic light at a glance."""
+    for name in themes.ORDER:
+        lights = themes.get(name)["lights"]
+        for lamp, bands in HUE_BANDS.items():
+            colour = lights[lamp][0]
+            hue = _hue(colour)
+            ok(any(lo <= hue <= hi for lo, hi in bands),
+               "%s: the %s lamp is %s (hue %.0f), which is not a %s"
+               % (name, lamp, colour, hue, lamp))
+
+
+def test_lamps_are_saturated_enough_to_read_as_a_colour():
+    for name in themes.ORDER:
+        lights = themes.get(name)["lights"]
+        for lamp in ("red", "orange", "green"):
+            colour = lights[lamp][0]
+            ok(_saturation(colour) > 0.45,
+               "%s: the %s lamp %s is too washed out to read as a colour"
+               % (name, lamp, colour))
+
+
+def test_the_high_contrast_theme_separates_the_lamps_by_brightness():
+    """Since every theme now uses true red/amber/green, hue alone cannot help
+    someone who cannot tell red from green. This theme spreads the lamps as far
+    apart in brightness as those colours allow."""
+    t = themes.get("contrast")
     lums = [_luminance(t["lights"][k][0]) for k in ("red", "orange", "green")]
     for i in range(len(lums)):
         for j in range(i + 1, len(lums)):
             ok(abs(lums[i] - lums[j]) > 0.12,
-               "colour-safe lamps %d and %d are too close in brightness "
+               "high-contrast lamps %d and %d are too close in brightness "
                "(%.2f vs %.2f)" % (i, j, lums[i], lums[j]))
 
-    def channels(colour):
-        return (int(colour[1:3], 16), int(colour[3:5], 16), int(colour[5:7], 16))
 
-    working = channels(t["lights"]["red"][0])
-    done = channels(t["lights"]["green"][0])
-    ok(working[2] > working[0], "the working lamp should be blue-dominant")
-    ok(done[2] >= done[0], "the done lamp must not be red-dominant")
+def test_a_renamed_theme_still_resolves():
+    """An existing panel.json may still name a theme that has been renamed."""
+    eq(themes.resolve("colourblind"), "contrast", "old name should map over")
+    eq(themes.get("colourblind"), themes.get("contrast"))
+    eq(themes.resolve("nonsense"), themes.DEFAULT, "junk falls back")
+    eq(themes.resolve("neon"), "neon", "current names are untouched")
 
 
 def test_the_exported_json_matches_the_python_definitions():

@@ -413,7 +413,14 @@
 
   fetch("themes.json")
     .then(r => r.json())
-    .then(d => { THEMES = d; fillThemePicker(); applyTheme(theme); })
+    .then(d => {
+      THEMES = d;
+      // A stored name may be one that has since been renamed.
+      const alias = (d.aliases || {})[theme];
+      if (alias) { theme = alias; remember("clt.theme", theme); }
+      fillThemePicker();
+      applyTheme(theme);
+    })
     .catch(() => { /* the :root fallbacks stay in place */ });
 
   function strike(ctx, voice, spec, freq, at, gain) {
@@ -625,6 +632,27 @@
     li.classList.remove("announcing");
   }
 
+  // Subagents run inside their parent's session, so their churn looks like the
+  // parent changing state: an agent finishing makes the parent fire Stop
+  // (green) and immediately pick the work back up (red). Waiting a moment and
+  // re-checking drops the sounds for states that were never on screen, and a
+  // session with agents still running is not finished, so it stays silent.
+  const CHIME_DELAY = 700;
+  const armedChimes = new Map();
+
+  function armChime(id, state) {
+    clearTimeout((armedChimes.get(id) || {}).timer);
+    const timer = setTimeout(() => {
+      armedChimes.delete(id);
+      const current = sessions.find(s => String(s.session_id) === id);
+      if (!current || current.state !== state) return;   // too brief to see
+      const usage = current.usage || {};
+      if (Number(usage.agents) > 0) return;              // an agent is working
+      chime(state);
+    }, CHIME_DELAY);
+    armedChimes.set(id, { state: state, timer: timer });
+  }
+
   function pulse(id) {
     const li = row(id);
     if (!li) return;
@@ -644,7 +672,7 @@
       const changed = seenFirst && was && was !== s.state;
       if (changed) { pulse(id); clearBanner(id); }
       if (changed && (s.state === "orange" || s.state === "green")) {
-        chime(s.state);
+        armChime(id, s.state);
         announce(id, bannerText(s, was));
       }
       prevState.set(id, s.state);
@@ -657,6 +685,8 @@
         prevSince.delete(id);
         clearTimeout(bannerTimers.get(id));
         bannerTimers.delete(id);
+        const armed = armedChimes.get(id);
+        if (armed) { clearTimeout(armed.timer); armedChimes.delete(id); }
       }
     }
     seenFirst = true;

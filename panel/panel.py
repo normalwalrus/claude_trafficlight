@@ -76,6 +76,10 @@ POLL_MS = 16         # how often the UI thread drains the SSE queue
 BANNER_SECS = 4.0
 BANNER_FADE = 0.35
 
+# A state has to hold this long before it is worth a sound. Anything shorter
+# was never visible on screen, so chiming for it is just noise.
+CHIME_DELAY_MS = 700
+
 # Settings panel, at 100% scale.
 SETTINGS_H = 134
 MIN_SCALE = 0.75
@@ -212,7 +216,9 @@ class Panel:
         geometry does: so they can change while the panel is running.
         """
         if name is not None:
-            self.theme = name if name in themes.THEMES else themes.DEFAULT
+            # resolve() also maps themes that have been renamed, so an older
+            # config does not silently snap back to the default.
+            self.theme = themes.resolve(name)
         t = themes.get(self.theme)
         self.BG = t["bg"]
         self.BG_HOVER = t["bg_hover"]
@@ -317,6 +323,7 @@ class Panel:
         self.anim = {}          # sid -> (from_state, to_state, started)
         self.banners = {}       # sid -> (text, state, started)
         self.prev_since = {}    # sid -> when the previous state began
+        self._chime_armed = {}  # sid -> (state, armed at) awaiting confirmation
         self._frame_job = None
         self.settings_open = False
         self.slider_hitboxes = []
@@ -514,8 +521,7 @@ class Panel:
                 self.banners[sid] = (
                     self.banner_text(s, was, state), state, time.time())
                 self.flash_until[sid] = time.time() + BANNER_SECS
-                if self.sounds:
-                    chime.play(state, self.volume, self.sound)
+                self.arm_chime(sid, state)
             self.prev_state[sid] = state
             self.prev_since[sid] = as_float(s.get("since"), time.time())
 
@@ -527,12 +533,53 @@ class Panel:
                 self.prev_since.pop(sid, None)
                 self.anim.pop(sid, None)
                 self.banners.pop(sid, None)
+                self._chime_armed.pop(sid, None)
         self.expanded &= live
 
         self.sessions = sessions
         self.seen_first_snapshot = True
         self.draw()
         self.start_frames()
+
+    def session_by_id(self, sid):
+        for s in self.sessions:
+            if s.get("session_id") == sid:
+                return s
+        return None
+
+    def agents_running(self, s):
+        usage = s.get("usage") if isinstance(s, dict) else None
+        return as_int(usage.get("agents")) if isinstance(usage, dict) else 0
+
+    def arm_chime(self, sid, state):
+        """Chime only for a change the main session actually made, and only if
+        it lasts long enough to see.
+
+        Subagents run inside their parent's session, so their churn shows up as
+        the parent's own state changing: an agent finishing makes the parent
+        fire Stop (green) and then immediately pick the work back up (red). The
+        sound fires for a green that was never on screen. Waiting a moment and
+        re-checking removes those, and a session with agents still running is
+        not finished at all, so it stays silent regardless.
+        """
+        if not self.sounds:
+            return
+        self._chime_armed[sid] = (state, time.time())
+        self.root.after(CHIME_DELAY_MS, lambda: self.fire_chime(sid, state))
+
+    def fire_chime(self, sid, state):
+        armed = self._chime_armed.get(sid)
+        if not armed or armed[0] != state:
+            return                      # superseded by a newer change
+        self._chime_armed.pop(sid, None)
+        if not self.sounds:
+            return
+        current = self.session_by_id(sid)
+        if current is None or current.get("state") != state:
+            return                      # too brief to see, so too brief to hear
+        if self.agents_running(current):
+            return                      # an agent is still working; not done
+        chime.play(state, self.volume, self.sound)
 
     def banner_text(self, s, was, state):
         """What the row says about the change that just happened."""

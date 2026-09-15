@@ -83,14 +83,16 @@ THEMES = {
         "menu_bg": "#1c1630", "menu_active": "#33265c",
         "case_bg": "#0a0712", "case_edge": "#4a2f7a", "bezel": "#3a2a5c",
         "lamp_off": "#1b1430", "lens": "#ffffff",
+        # Electric, but still a red, an amber and a green: the theme carries
+        # its character in the surroundings, not by recolouring the lamps.
         "lights": {
-            "red": ["#ff2d78", "#5c0f33"],
+            "red": ["#ff2f45", "#5c0f1c"],
             "orange": ["#ffb703", "#5a3d05"],
-            "green": ["#25f4c3", "#0a5348"],
+            "green": ["#1fe87a", "#0a5330"],
         },
-        "bar_bg": "#241a3d", "bar_ok": "#25f4c3", "bar_warn": "#ffb703",
-        "bar_full": "#ff2d78", "btn_bg": "#241a3d", "btn_hover": "#33265c",
-        "slider_track": "#2c2049", "slider_knob": "#25f4c3",
+        "bar_bg": "#241a3d", "bar_ok": "#1fe87a", "bar_warn": "#ffb703",
+        "bar_full": "#ff2f45", "btn_bg": "#241a3d", "btn_hover": "#33265c",
+        "slider_track": "#2c2049", "slider_knob": "#1fe87a",
         "badge_bg": "#4a3208", "badge_fg": "#ffb703",
     },
 
@@ -114,13 +116,14 @@ THEMES = {
         "badge_bg": "#3a2c0c", "badge_fg": "#ffc24a",
     },
 
-    "colourblind": {
-        "label": "Colour-safe",
+    "contrast": {
+        "label": "High contrast",
         "dark": True,
-        # Red/green is the worst possible pairing for the most common forms of
-        # colour blindness. Position already disambiguates the lamps, but this
-        # theme also separates them by hue AND brightness: deep blue, amber,
-        # pale cyan - distinguishable under deuteranopia and protanopia.
+        # Every theme uses a true red, amber and green, so hue alone cannot be
+        # what separates the lamps for someone who cannot distinguish red from
+        # green. This theme leans on the other two cues instead: position never
+        # changes, and the lamps are spread as far apart in brightness as the
+        # traffic-light colours allow.
         "bg": "#14181d", "bg_hover": "#1c222a", "border": "#2c343e",
         "fg": "#eef2f6", "fg_dim": "#8a95a3", "fg_header": "#6f7a88",
         "detail_bg": "#101418", "settings_bg": "#121720",
@@ -128,12 +131,14 @@ THEMES = {
         "case_bg": "#0b0e12", "case_edge": "#39434f", "bezel": "#2c343e",
         "lamp_off": "#181d24", "lens": "#ffffff",
         "lights": {
-            "red": ["#1f6bff", "#122d5c"],      # working
-            "orange": ["#ffb000", "#5a3e00"],   # needs you
-            "green": ["#7ce8ff", "#11454f"],    # done
+            "red": ["#ff2b36", "#5e0d12"],      # working
+            "orange": ["#ffc400", "#5c4600"],   # needs you
+            # A deep traffic-green: amber and green are both bright colours,
+            # so the green has to come down for the brightness cue to exist.
+            "green": ["#00b84a", "#003d18"],    # done
         },
-        "bar_bg": "#222a33", "bar_ok": "#7ce8ff", "bar_warn": "#ffb000",
-        "bar_full": "#1f6bff", "btn_bg": "#222a33", "btn_hover": "#2f3a46",
+        "bar_bg": "#222a33", "bar_ok": "#00b84a", "bar_warn": "#ffc400",
+        "bar_full": "#ff2b36", "btn_bg": "#222a33", "btn_hover": "#2f3a46",
         "slider_track": "#28313b", "slider_knob": "#eef2f6",
         "badge_bg": "#4a3300", "badge_fg": "#ffb000",
     },
@@ -159,12 +164,23 @@ THEMES = {
     },
 }
 
-ORDER = ("midnight", "daylight", "neon", "terminal", "colourblind", "sepia")
+ORDER = ("midnight", "daylight", "neon", "terminal", "contrast", "sepia")
 DEFAULT = "midnight"
 
 
+# Themes that have been renamed, so an existing config still resolves.
+ALIASES = {"colourblind": "contrast"}
+
+
 def get(name):
+    name = ALIASES.get(name, name)
     return THEMES.get(name, THEMES[DEFAULT])
+
+
+def resolve(name):
+    """The canonical key for a possibly-renamed theme name."""
+    name = ALIASES.get(name, name)
+    return name if name in THEMES else DEFAULT
 
 
 def label(name):

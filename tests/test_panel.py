@@ -230,6 +230,12 @@ def test_toast_text_is_bounded():
 # --- alerts -----------------------------------------------------------------
 
 
+def flush_chimes(p):
+    """Fire any armed chime as the delayed callback would."""
+    for sid, (state, _t) in list(p._chime_armed.items()):
+        p.fire_chime(sid, state)
+
+
 def test_no_chime_storm_on_the_first_snapshot_or_on_reconnect():
     p = panel()
     import chime
@@ -241,21 +247,26 @@ def test_no_chime_storm_on_the_first_snapshot_or_on_reconnect():
         p.prev_state.clear()
         p.seen_first_snapshot = False
         p.on_snapshot(snapshot([session(0, state="orange"), session(1, state="green")]))
+        flush_chimes(p)
         eq(played, [], "first snapshot must be silent")
 
         p.on_snapshot(snapshot([session(0, state="red"), session(1, state="red")]))
+        flush_chimes(p)
         eq(played, [], "transitions into red are silent")
 
         p.on_snapshot(snapshot([session(0, state="orange"), session(1, state="green")]))
+        flush_chimes(p)
         eq(sorted(played), ["green", "orange"], "a genuine transition must chime")
         played[:] = []
 
         p.on_snapshot(snapshot([session(0, state="orange"), session(1, state="green")]))
+        flush_chimes(p)
         eq(played, [], "an identical snapshot must not re-chime")
 
         # a brand new session that arrives already orange is not a transition
         p.on_snapshot(snapshot([session(0, state="orange"), session(1, state="green"),
                                 session(2, state="orange")]))
+        flush_chimes(p)
         eq(played, [], "a new session must not chime on arrival")
 
         # server restart: Feed reports disconnect, pump clears the flag
@@ -264,6 +275,7 @@ def test_no_chime_storm_on_the_first_snapshot_or_on_reconnect():
         eq(p.seen_first_snapshot, False, "disconnect must arm the suppression")
         p.on_snapshot(snapshot([session(0, state="green"), session(1, state="orange"),
                                 session(2, state="green")]))
+        flush_chimes(p)
         eq(played, [], "no chime storm on the first snapshot after reconnect")
 
         # ...but alerts come back straight afterwards
@@ -271,7 +283,8 @@ def test_no_chime_storm_on_the_first_snapshot_or_on_reconnect():
                                 session(2, state="red")]))
         p.on_snapshot(snapshot([session(0, state="green"), session(1, state="green"),
                                 session(2, state="green")]))
-        eq(played, ["green", "green", "green"], "alerts did not resume")
+        flush_chimes(p)
+        eq(sorted(played), ["green", "green", "green"], "alerts did not resume")
     finally:
         chime.play = original
 
@@ -805,3 +818,119 @@ def test_the_theme_choice_is_persisted():
         p.apply_theme(was)
         p.cfg["theme"] = was
         P.save_config(p.cfg)
+
+
+# --- chime gating ------------------------------------------------------------
+
+
+def _capture_chimes(p):
+    import chime
+    played = []
+    original = chime.play
+    chime.play = lambda *a, **k: played.append(a[0] if a else None)
+    return played, original
+
+
+def test_a_flicker_too_brief_to_see_makes_no_sound():
+    """An agent finishing makes the parent fire Stop (green) and immediately
+    pick the work back up (red). The green is gone before it is on screen, so
+    chiming for it is pure noise."""
+    import chime
+    p = panel()
+    played, original = _capture_chimes(p)
+    p.seen_first_snapshot = True
+    p.sounds = True
+    try:
+        p.prev_state = {"s0": "red"}
+        p.on_snapshot(snapshot([session(0, state="green")]))
+        eq(played, [], "nothing should sound before the delay elapses")
+        ok("s0" in p._chime_armed, "a chime should be armed")
+
+        # it goes straight back to red before the delay is up
+        p.on_snapshot(snapshot([session(0, state="red")]))
+        p.fire_chime("s0", "green")
+        eq(played, [], "the vanished green must not chime")
+    finally:
+        chime.play = original
+        p._chime_armed.clear()
+
+
+def test_a_state_that_sticks_does_chime():
+    import chime
+    p = panel()
+    played, original = _capture_chimes(p)
+    p.seen_first_snapshot = True
+    p.sounds = True
+    try:
+        p.prev_state = {"s0": "red"}
+        p.on_snapshot(snapshot([session(0, state="green")]))
+        p.fire_chime("s0", "green")     # still green when the delay expires
+        eq(played, ["green"], "a change you can see should sound")
+    finally:
+        chime.play = original
+        p._chime_armed.clear()
+
+
+def test_a_session_with_agents_running_stays_silent():
+    """Subagents run inside their parent's session, so their churn looks like
+    the parent changing state. A session with agents still working is not
+    finished, and must not announce that it is."""
+    import chime
+    p = panel()
+    played, original = _capture_chimes(p)
+    p.seen_first_snapshot = True
+    p.sounds = True
+    try:
+        p.prev_state = {"s0": "red"}
+        p.on_snapshot(snapshot([session(0, state="green",
+                                        usage={"agents": 2, "context_limit": 200000})]))
+        p.fire_chime("s0", "green")
+        eq(played, [], "an agent is still running: no chime")
+
+        # the last agent finishes and the session really is done
+        p.prev_state = {"s0": "red"}
+        p.on_snapshot(snapshot([session(0, state="green",
+                                        usage={"agents": 0, "context_limit": 200000})]))
+        p.fire_chime("s0", "green")
+        eq(played, ["green"], "once no agents remain it should chime")
+    finally:
+        chime.play = original
+        p._chime_armed.clear()
+
+
+def test_a_newer_change_supersedes_an_armed_chime():
+    import chime
+    p = panel()
+    played, original = _capture_chimes(p)
+    p.seen_first_snapshot = True
+    p.sounds = True
+    try:
+        p.prev_state = {"s0": "red"}
+        p.on_snapshot(snapshot([session(0, state="green")]))
+        p.on_snapshot(snapshot([session(0, state="orange",
+                                        detail="needs permission")]))
+        p.fire_chime("s0", "green")     # the stale one fires late
+        eq(played, [], "a superseded chime must not sound")
+        p.fire_chime("s0", "orange")
+        eq(played, ["orange"], "the current one still does")
+    finally:
+        chime.play = original
+        p._chime_armed.clear()
+
+
+def test_alerts_off_arms_nothing():
+    import chime
+    p = panel()
+    played, original = _capture_chimes(p)
+    p.seen_first_snapshot = True
+    p.sounds = False
+    try:
+        p.prev_state = {"s0": "red"}
+        p.on_snapshot(snapshot([session(0, state="green")]))
+        eq(p._chime_armed, {}, "nothing armed when alerts are off")
+        p.fire_chime("s0", "green")
+        eq(played, [], "and nothing sounds")
+    finally:
+        chime.play = original
+        p.sounds = True
+        p._chime_armed.clear()
