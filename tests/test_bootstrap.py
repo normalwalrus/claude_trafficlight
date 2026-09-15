@@ -204,3 +204,46 @@ def test_installing_twice_through_different_launchers_does_not_duplicate():
         eq(count(), 0, "--remove must clear entries from either installer")
     finally:
         I.SETTINGS, I.PAYLOAD_DIR, I.HOOK = saved_settings, saved_payload, saved_hook
+
+
+# --- host path shape ---------------------------------------------------------
+
+
+def _bootstrap():
+    import bootstrap
+    return bootstrap
+
+
+def test_a_posix_shell_on_windows_is_still_a_windows_host():
+    """Git Bash and MSYS report HOME as /c/Users/name. Read literally that is a
+    POSIX host, so we would generate a hook.sh for a machine running cmd.exe
+    and write a path Claude Code cannot execute - the lights would just never
+    come on, with nothing on screen to say why."""
+    B = _bootstrap()
+    eq(B.normalise_host_home("/c/Users/someone"), r"C:\Users\someone")
+    eq(B.normalise_host_home("/d/work/dev"), r"D:\work\dev")
+    ok(B.host_is_windows(B.normalise_host_home("/c/Users/someone")),
+       "must be recognised as a Windows host")
+
+
+def test_windows_paths_settle_on_one_separator():
+    B = _bootstrap()
+    eq(B.normalise_host_home(r"C:\Users\someone"), r"C:\Users\someone")
+    eq(B.normalise_host_home("C:/Users/someone"), r"C:\Users\someone")
+    eq(B.normalise_host_home("C:\\Users\\someone\\"), r"C:\Users\someone",
+       "a trailing separator is dropped")
+
+
+def test_real_posix_homes_are_left_alone():
+    B = _bootstrap()
+    for home in ("/home/dev", "/Users/dev", "/root", "/var/lib/someone"):
+        eq(B.normalise_host_home(home), home, home)
+        ok(not B.host_is_windows(B.normalise_host_home(home)),
+           "%s is a posix host" % home)
+
+
+def test_junk_does_not_raise():
+    B = _bootstrap()
+    for junk in ("", None, "   ", "/", "//", "relative/path"):
+        got = B.normalise_host_home(junk)
+        ok(isinstance(got, str), "normalise_host_home(%r) -> %r" % (junk, got))

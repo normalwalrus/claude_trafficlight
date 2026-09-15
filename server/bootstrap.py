@@ -17,7 +17,7 @@ import re
 import sys
 
 HOST_CLAUDE = os.environ.get("HOST_CLAUDE_DIR", "/host-claude")
-HOST_HOME = os.environ.get("HOST_HOME", "")
+_RAW_HOST_HOME = os.environ.get("HOST_HOME", "")
 ENABLED = os.environ.get("TRAFFICLIGHT_INSTALL_HOOKS", "1") not in ("0", "false", "no")
 PAYLOAD_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hookpayload")
 
@@ -25,6 +25,30 @@ sys.path.insert(0, PAYLOAD_SOURCE)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import install_hooks  # noqa: E402
+
+
+def normalise_host_home(home):
+    """Put HOST_HOME into the form the host itself uses.
+
+    A POSIX shell on Windows (Git Bash, MSYS, WSL-style paths) reports HOME as
+    `/c/Users/name`. Taken literally that reads as a POSIX host, so we would
+    write a `hook.sh` for a machine that runs cmd.exe, and put a path into
+    settings.json that Claude Code cannot execute. Either mistake means the
+    lights simply never come on, with nothing on screen to say why.
+    """
+    home = (home or "").strip().replace("\\", "/").rstrip("/")
+    match = re.match(r"^/([A-Za-z])/(.+)$", home)
+    if match:
+        home = match.group(1).upper() + ":/" + match.group(2)
+    if re.match(r"^[A-Za-z]:/", home):
+        # Settle on one separator: host_join adds backslashes for a Windows
+        # host, and mixing the two produces paths that are legal but horrible
+        # to read in settings.json.
+        return home.replace("/", "\\")
+    return home
+
+
+HOST_HOME = normalise_host_home(_RAW_HOST_HOME)
 
 
 def host_is_windows(home):
