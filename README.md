@@ -14,42 +14,76 @@ doing and how many tokens it has spent.
 
 ---
 
-## Setup
+## What you need
 
-Two commands. You need Docker; nothing else.
+| | |
+| --- | --- |
+| **Docker** | Docker Desktop on Windows or macOS, Docker Engine on Linux. This is the only hard requirement. |
+| **Claude Code**, already installed and run once | So that `~/.claude/` exists — that folder is what gets mounted, and it is where the hooks are registered. |
+| **Port 8787** free on localhost | Change the left-hand side of the `ports:` line in `docker-compose.yml` if something else has it. |
+
+Nothing else. Not Python, not Node, no `pip install`. Windows, macOS and Linux
+all work; the container detects which and generates the right hook launcher.
+
+## How to start it
 
 ```bash
+git clone https://github.com/normalwalrus/claude_trafficlight.git
+cd claude_trafficlight
+
 docker compose build
 docker compose up -d
 ```
 
-Open **http://localhost:8787** and you are done.
+Then open **http://localhost:8787**.
 
-Press **pop out** there to float the panel in a small always-on-top window —
-Chrome's Document Picture-in-Picture, so it stays above your editor without
-anything installed on the host. Closing it puts the panel back in the tab.
+**Restart any Claude Code sessions you already have open.** Sessions that were
+running before you installed it *do* appear straight away — the panel reads
+Claude Code's own list of live sessions and shows them green, with their token
+figures read from their transcripts. But hooks are only read when a session
+starts, so those sessions will not change colour as they work until you restart
+them. Anything you open afterwards behaves fully from the start.
 
-That really is the whole install. On startup the container copies its hook
-payload into your `~/.claude/` and registers it in `settings.json` itself, so:
+That is the whole install. On startup the container copies its hook payload
+into your `~/.claude/` and registers it in `settings.json` itself, so:
 
 * nothing needs installing on the host &mdash; not even Python
 * the repo can live anywhere, and can be deleted afterwards
 * moving or renaming the clone cannot break it
 
-**Restart any Claude Code sessions that are already running** &mdash; hooks are
-read at session start. New sessions appear on their own.
+Press **pop out** in the header to float the panel in a small always-on-top
+window — Chrome's Document Picture-in-Picture, so it stays above your editor
+with nothing installed on the host. Closing it puts the panel back in the tab.
 
-> To stop it touching `settings.json`, set `TRAFFICLIGHT_INSTALL_HOOKS=0` in
-> `docker-compose.yml`. A timestamped backup is written before any change —
-> and when the registration is already correct, nothing is written at all, so
-> repeated `docker compose up` runs leave the file untouched.
-
-### Uninstall
+### Checking it worked
 
 ```bash
-docker compose down
-python install.py --remove     # unregisters the hooks and removes the payload
+docker compose logs | grep bootstrap    # should name your ~/.claude payload path
+curl http://localhost:8787/healthz      # {"ok": true, ...}
 ```
+
+If the panel says *waiting for Claude sessions* and stays empty, the usual
+cause is that no session has been restarted since you installed it.
+
+> **On `settings.json`:** the container edits it to register the hooks. A
+> timestamped backup is written before any change, and when the registration is
+> already correct nothing is written at all, so repeated `docker compose up`
+> runs leave the file untouched. Set `TRAFFICLIGHT_INSTALL_HOOKS=0` in
+> `docker-compose.yml` if you would rather it never touched the file.
+
+### Stopping and uninstalling
+
+```bash
+docker compose stop             # stop it; hooks stay registered, no lights
+docker compose up -d            # start it again
+
+docker compose down             # stop and remove the container
+python install.py --remove      # also unregister the hooks and delete the payload
+```
+
+`install.py --remove` needs Python; without it, delete the
+`~/.claude/claude-trafficlight/` folder and remove the `hooks` entries that
+point at it from `~/.claude/settings.json`.
 
 ### Optional: the native panel
 
@@ -66,7 +100,7 @@ python install.py --remove # undo everything
 
 Both panels show the same data and can run at the same time.
 
-## What the host needs
+## What each setup gets you
 
 | Host has                | You get                                            |
 | ----------------------- | -------------------------------------------------- |
