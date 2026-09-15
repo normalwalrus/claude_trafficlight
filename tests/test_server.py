@@ -337,89 +337,223 @@ def test_concurrent_posts_do_not_lose_or_corrupt_sessions():
 # --- liveness ----------------------------------------------------------------
 
 
-def test_an_idle_but_open_session_is_not_reaped():
-    """The reported bug: a session left open in the editor vanished from the
-    panel. Between turns it fires no hooks at all, so the inactivity timeout
-    alone deleted a row the user could plainly still see."""
+def _registry(entries):
+    """Build a fake ~/.claude mount holding Claude Code's session registry."""
     import json as _json
     import os
     import tempfile
-
-    app = _srv()
     mount = tempfile.mkdtemp(prefix="clt-registry-")
     os.makedirs(os.path.join(mount, "sessions"))
-
-    def register(session_id, updated_ms):
-        path = os.path.join(mount, "sessions", session_id + ".json")
-        with open(path, "w", encoding="utf-8") as fh:
-            _json.dump({"sessionId": session_id, "status": "idle",
-                        "updatedAt": updated_ms, "cwd": "/tmp/x"}, fh)
-
-    saved_dir, saved_stale = app.HOST_CLAUDE, app.STALE_SECONDS
-    app.HOST_CLAUDE = mount
-    app.STALE_SECONDS = 1
-    try:
-        now_ms = time.time() * 1000
-        register("open-idle", now_ms)          # open in the editor, just quiet
-        # "gone" is deliberately absent from the registry
-
-        app.store.sessions.clear()
-        for sid in ("open-idle", "gone"):
-            app.store.apply(app.Event(session_id=sid, event="Stop", project=sid))
-            app.store.sessions[sid]["updated"] = time.time() - 9999
-
-        app.store.reap()
-        ids = set(app.store.sessions)
-        ok("open-idle" in ids,
-           "a session Claude Code still lists must survive: %r" % ids)
-        ok("gone" not in ids,
-           "a session not in the registry should still be reaped: %r" % ids)
-    finally:
-        app.HOST_CLAUDE, app.STALE_SECONDS = saved_dir, saved_stale
-        app.store.sessions.clear()
+    for sid, extra in entries.items():
+        body = {"sessionId": sid, "status": "idle",
+                "updatedAt": time.time() * 1000, "cwd": "/tmp/" + sid}
+        body.update(extra or {})
+        with open(os.path.join(mount, "sessions", sid + ".json"), "w",
+                  encoding="utf-8") as fh:
+            _json.dump(body, fh)
+    return mount
 
 
-def test_a_stale_registry_entry_does_not_keep_a_row_forever():
-    """If a session is killed abruptly its registry file can linger."""
-    import json as _json
-    import os
-    import tempfile
+def _seed(app, sid, age_seconds=0.0, started=None):
+    app.store.apply(app.Event(session_id=sid, event="Stop", project=sid))
+    row = app.store.sessions[sid]
+    row["updated"] = time.time() - age_seconds
+    row["started"] = time.time() - (started if started is not None else age_seconds)
+    return row
 
+
+def test_a_session_is_never_dropped_for_being_idle():
+    """The reported behaviour: rows vanished after a while. A session left open
+    in the editor fires no hooks at all between turns, so quietness must never
+    be treated as death - however long it lasts."""
     app = _srv()
-    mount = tempfile.mkdtemp(prefix="clt-registry-old-")
-    os.makedirs(os.path.join(mount, "sessions"))
-    with open(os.path.join(mount, "sessions", "old.json"), "w", encoding="utf-8") as fh:
-        _json.dump({"sessionId": "old", "status": "busy",
-                    "updatedAt": (time.time() - 99999) * 1000}, fh)
-
-    saved_dir, saved_stale = app.HOST_CLAUDE, app.STALE_SECONDS
+    mount = _registry({"open": None})
+    saved = (app.HOST_CLAUDE, app.STALE_SECONDS)
     app.HOST_CLAUDE = mount
     app.STALE_SECONDS = 1
     try:
         app.store.sessions.clear()
-        app.store.apply(app.Event(session_id="old", event="Stop", project="old"))
-        app.store.sessions["old"]["updated"] = time.time() - 9999
+        app.store.missing_since.clear()
+        # a full day of silence
+        _seed(app, "open", age_seconds=86400)
         app.store.reap()
-        ok("old" not in app.store.sessions,
-           "an expired registry entry must not pin the row")
+        ok("open" in app.store.sessions,
+           "an open session must survive any amount of idleness")
+        # and again much later
+        app.store.reap()
+        ok("open" in app.store.sessions, "still there on a later sweep")
     finally:
-        app.HOST_CLAUDE, app.STALE_SECONDS = saved_dir, saved_stale
+        app.HOST_CLAUDE, app.STALE_SECONDS = saved
         app.store.sessions.clear()
+        app.store.missing_since.clear()
+
+
+def test_a_session_goes_when_claude_code_stops_listing_it():
+    """Closing the editor tab removes it from the registry; the row follows."""
+    app = _srv()
+    mount = _registry({})          # nothing registered: the session is gone
+    saved = (app.HOST_CLAUDE, app.MISSING_GRACE, app.NEW_SESSION_GRACE)
+    app.HOST_CLAUDE = mount
+    app.MISSING_GRACE = 0
+    app.NEW_SESSION_GRACE = 0
+    try:
+        app.store.sessions.clear()
+        app.store.missing_since.clear()
+        _seed(app, "closed", age_seconds=5)
+        app.store.reap()
+        ok("closed" not in app.store.sessions,
+           "a session no longer listed should be removed")
+    finally:
+        app.HOST_CLAUDE, app.MISSING_GRACE, app.NEW_SESSION_GRACE = saved
+        app.store.sessions.clear()
+        app.store.missing_since.clear()
+
+
+def test_a_brand_new_session_is_not_dropped_before_it_registers():
+    """A hook can beat Claude Code to writing the registry file."""
+    app = _srv()
+    mount = _registry({})
+    saved = (app.HOST_CLAUDE, app.MISSING_GRACE, app.NEW_SESSION_GRACE)
+    app.HOST_CLAUDE = mount
+    app.MISSING_GRACE = 0
+    app.NEW_SESSION_GRACE = 90
+    try:
+        app.store.sessions.clear()
+        app.store.missing_since.clear()
+        _seed(app, "fresh", age_seconds=0, started=1)
+        app.store.reap()
+        ok("fresh" in app.store.sessions,
+           "a just-started session must be given time to register")
+    finally:
+        app.HOST_CLAUDE, app.MISSING_GRACE, app.NEW_SESSION_GRACE = saved
+        app.store.sessions.clear()
+        app.store.missing_since.clear()
+
+
+def test_one_missed_scan_does_not_remove_a_row():
+    """Registry files are rewritten in place; a scan can catch one mid-write."""
+    app = _srv()
+    mount = _registry({})
+    saved = (app.HOST_CLAUDE, app.MISSING_GRACE, app.NEW_SESSION_GRACE)
+    app.HOST_CLAUDE = mount
+    app.MISSING_GRACE = 60
+    app.NEW_SESSION_GRACE = 0
+    try:
+        app.store.sessions.clear()
+        app.store.missing_since.clear()
+        _seed(app, "blink", age_seconds=5)
+        app.store.reap()
+        ok("blink" in app.store.sessions,
+           "one absent scan must not be enough to delete a row")
+        ok("blink" in app.store.missing_since, "absence should be recorded")
+
+        # it comes back before the grace expires
+        import json as _json
+        import os
+        with open(os.path.join(mount, "sessions", "blink.json"), "w",
+                  encoding="utf-8") as fh:
+            _json.dump({"sessionId": "blink", "updatedAt": time.time() * 1000}, fh)
+        app.store.reap()
+        ok("blink" in app.store.sessions, "still alive")
+        ok("blink" not in app.store.missing_since,
+           "the absence record should be cleared once it reappears")
+    finally:
+        app.HOST_CLAUDE, app.MISSING_GRACE, app.NEW_SESSION_GRACE = saved
+        app.store.sessions.clear()
+        app.store.missing_since.clear()
+
+
+def test_an_old_registry_entry_still_counts_as_live_by_default():
+    """REGISTRY_TTL defaults to 0: presence is enough, nothing ages out."""
+    app = _srv()
+    eq(app.REGISTRY_TTL, 0, "the default must not age entries out")
+    mount = _registry({"ancient": {"updatedAt": (time.time() - 99999) * 1000}})
+    saved = (app.HOST_CLAUDE, app.MISSING_GRACE, app.NEW_SESSION_GRACE)
+    app.HOST_CLAUDE = mount
+    app.MISSING_GRACE = 0
+    app.NEW_SESSION_GRACE = 0
+    try:
+        app.store.sessions.clear()
+        app.store.missing_since.clear()
+        _seed(app, "ancient", age_seconds=99999)
+        app.store.reap()
+        ok("ancient" in app.store.sessions,
+           "an old registry entry is still a running session")
+    finally:
+        app.HOST_CLAUDE, app.MISSING_GRACE, app.NEW_SESSION_GRACE = saved
+        app.store.sessions.clear()
+        app.store.missing_since.clear()
+
+
+def test_session_end_removes_the_row_immediately():
+    """The clean path: quitting Claude fires SessionEnd, no waiting."""
+    app = _srv()
+    app.store.sessions.clear()
+    app.store.apply(app.Event(session_id="bye", event="Stop", project="bye"))
+    ok("bye" in app.store.sessions)
+    app.store.apply(app.Event(session_id="bye", event="SessionEnd", project="bye"))
+    ok("bye" not in app.store.sessions, "SessionEnd removes it at once")
 
 
 def test_no_registry_falls_back_to_the_timeout():
     """Without the mount there is nothing to consult, so behave as before."""
     app = _srv()
-    saved_dir, saved_stale = app.HOST_CLAUDE, app.STALE_SECONDS
+    saved = (app.HOST_CLAUDE, app.STALE_SECONDS)
     app.HOST_CLAUDE = "/definitely/not/here"
     app.STALE_SECONDS = 1
     try:
         eq(app.live_session_ids(), None, "an unreadable registry reports None")
         app.store.sessions.clear()
-        app.store.apply(app.Event(session_id="x", event="Stop", project="x"))
-        app.store.sessions["x"]["updated"] = time.time() - 9999
+        _seed(app, "x", age_seconds=9999)
         app.store.reap()
         ok("x" not in app.store.sessions, "the timeout still applies")
     finally:
-        app.HOST_CLAUDE, app.STALE_SECONDS = saved_dir, saved_stale
+        app.HOST_CLAUDE, app.STALE_SECONDS = saved
+        app.store.sessions.clear()
+
+
+def test_running_sessions_are_adopted_even_if_they_never_report():
+    """Hooks only fire when something happens. A session sitting idle - or any
+    session at all after the container restarts - would otherwise be invisible
+    despite being open."""
+    app = _srv()
+    mount = _registry({"never-spoke": {"cwd": "/home/dev/projects/quiet-one",
+                                       "pid": 4321}})
+    saved = app.HOST_CLAUDE
+    app.HOST_CLAUDE = mount
+    try:
+        app.store.sessions.clear()
+        app.store.missing_since.clear()
+        eq(len(app.store.sessions), 0, "starting empty")
+        app.store.reap()
+        row = app.store.sessions.get("never-spoke")
+        ok(row, "a running session must be adopted: %r" % app.store.sessions)
+        eq(row["project"], "quiet-one", "project comes from the registry cwd")
+        eq(row["state"], "green", "we know it is running, not what it is doing")
+        eq(row["adopted"], True, "marked as adopted")
+        eq(row["pid"], 4321, "pid carried over")
+    finally:
+        app.HOST_CLAUDE = saved
+        app.store.sessions.clear()
+        app.store.missing_since.clear()
+
+
+def test_adoption_never_overwrites_a_session_we_heard_from():
+    """A real hook knows the state; the registry only knows it exists."""
+    app = _srv()
+    mount = _registry({"known": {"cwd": "/home/dev/projects/known"}})
+    saved = app.HOST_CLAUDE
+    app.HOST_CLAUDE = mount
+    try:
+        app.store.sessions.clear()
+        app.store.apply(app.Event(session_id="known", event="Notification",
+                                  project="known", detail="needs permission"))
+        eq(app.store.sessions["known"]["state"], "orange")
+        app.store.reap()
+        eq(app.store.sessions["known"]["state"], "orange",
+           "adoption must not clobber a reported state")
+        ok(not app.store.sessions["known"].get("adopted"),
+           "a session we heard from is not an adopted one")
+    finally:
+        app.HOST_CLAUDE = saved
         app.store.sessions.clear()

@@ -7,6 +7,8 @@
 <style>
   :root {
     color-scheme: dark;
+    /* Filled in from themes.json at runtime; these are the Midnight values so
+       the page is never unstyled before the fetch lands. */
     --bg: #15171c;
     --row: #1a1d24;
     --row-hover: #1d212a;
@@ -18,6 +20,18 @@
     --red: #ff5964;
     --orange: #ffb03a;
     --green: #3ddc84;
+    --lamp-off: #191d24;
+    --bezel: #2b323d;
+    --case-bg: #0b0d11;
+    --case-bg-top: #171b24;
+    --case-edge: #353d4a;
+    --bar-bg: #22262f;
+    --menu-bg: #1c2029;
+    --settings-bg: #101318;
+    --lens: #ffffff;
+    --red-halo: #59222a;
+    --orange-halo: #5a3f15;
+    --green-halo: #175130;
   }
   * { box-sizing: border-box; }
   body {
@@ -39,7 +53,7 @@
   #settings {
     margin-top: 10px;
     padding: 12px 14px;
-    background: #101318;
+    background: var(--settings-bg);
     border: 1px solid var(--border);
     border-radius: 10px;
   }
@@ -61,7 +75,7 @@
   #settings output { color: var(--fg); font-size: 12px; min-width: 52px;
                      text-align: right; }
   #settings select {
-    background: #1c2029; color: var(--fg);
+    background: var(--menu-bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 6px;
     padding: 4px 8px; font: inherit; font-size: 12px;
   }
@@ -96,8 +110,8 @@
     border-radius: 6px;
     cursor: pointer;
   }
-  button:hover { color: var(--fg); border-color: #3a414d; }
-  button[aria-pressed="true"] { color: var(--green); border-color: #2c4a3a; }
+  button:hover { color: var(--fg); border-color: var(--case-edge); }
+  button[aria-pressed="true"] { color: var(--green); border-color: var(--green); }
 
   ul { list-style: none; margin: 0; padding: 0; }
   li {
@@ -119,9 +133,9 @@
     gap: 14px;
   }
 
-  li[data-state="red"]    { --lit: var(--red);    --halo: #59222a; }
-  li[data-state="orange"] { --lit: var(--orange); --halo: #5a3f15; }
-  li[data-state="green"]  { --lit: var(--green);  --halo: #175130; }
+  li[data-state="red"]    { --lit: var(--red);    --halo: var(--red-halo); }
+  li[data-state="orange"] { --lit: var(--orange); --halo: var(--orange-halo); }
+  li[data-state="green"]  { --lit: var(--green);  --halo: var(--green-halo); }
 
   /* The signal head: a cast housing with three bezelled lamps. */
   .signal {
@@ -131,33 +145,33 @@
     flex: none;
     padding: 5px 8px;
     border-radius: 9px;
-    background: linear-gradient(#171b24, #0b0d11);
-    border: 1px solid #353d4a;
+    background: linear-gradient(var(--case-bg-top), var(--case-bg));
+    border: 1px solid var(--case-edge);
     box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 1px 3px rgba(0,0,0,.55);
   }
   .signal i {
     width: 12px; height: 12px;
     border-radius: 50%;
     display: block;
-    background: #191d24;
-    box-shadow: inset 0 0 0 1px #2b323d, inset 0 2px 3px rgba(0,0,0,.6);
+    background: var(--lamp-off);
+    box-shadow: inset 0 0 0 1px var(--bezel), inset 0 2px 3px rgba(0,0,0,.6);
     transition: background .3s ease, box-shadow .3s ease;
   }
   li[data-state="red"]    .signal i:nth-child(1),
   li[data-state="orange"] .signal i:nth-child(2),
   li[data-state="green"]  .signal i:nth-child(3) {
     background: var(--lit);
-    box-shadow: inset 0 0 0 1px rgba(255,255,255,.28),
+    box-shadow: inset 0 0 0 1px var(--lens-edge, rgba(255,255,255,.28)),
                 0 0 0 3px var(--halo),
                 0 0 10px 2px var(--lit);
   }
   /* One swell on the lamp that just lit. */
   @keyframes lampPulse {
-    0%   { box-shadow: inset 0 0 0 1px rgba(255,255,255,.28),
+    0%   { box-shadow: inset 0 0 0 1px var(--lens-edge, rgba(255,255,255,.28)),
                        0 0 0 3px var(--halo), 0 0 10px 2px var(--lit); }
-    45%  { box-shadow: inset 0 0 0 1px rgba(255,255,255,.5),
+    45%  { box-shadow: inset 0 0 0 1px var(--lens-edge-bright, rgba(255,255,255,.5)),
                        0 0 0 7px var(--halo), 0 0 20px 6px var(--lit); }
-    100% { box-shadow: inset 0 0 0 1px rgba(255,255,255,.28),
+    100% { box-shadow: inset 0 0 0 1px var(--lens-edge, rgba(255,255,255,.28)),
                        0 0 0 3px var(--halo), 0 0 10px 2px var(--lit); }
   }
   li.pulsing[data-state="red"]    .signal i:nth-child(1),
@@ -227,7 +241,7 @@
   .drow b { font-weight: 600; color: var(--fg); }
   .agents { color: var(--orange); }
   .bar {
-    height: 5px; border-radius: 3px; background: #22262f; overflow: hidden;
+    height: 5px; border-radius: 3px; background: var(--bar-bg); overflow: hidden;
   }
   .bar span { display: block; height: 100%; background: var(--green); }
   .bar.warn span { background: var(--orange); }
@@ -245,7 +259,7 @@
     color: var(--header); font-size: 11px; line-height: 1.6;
   }
   kbd {
-    font: inherit; background: #20242c; border: 1px solid var(--border);
+    font: inherit; background: var(--menu-bg); border: 1px solid var(--border);
     border-radius: 4px; padding: 1px 5px;
   }
 </style>
@@ -275,13 +289,19 @@
       <select id="setSound"></select>
       <button id="testSound" type="button">&#9655; test</button>
     </label>
+    <label>Theme
+      <select id="setTheme"></select>
+      <output></output>
+    </label>
   </section>
 
   <ul id="rows"></ul>
   <div class="empty" id="empty">Waiting for Claude sessions&hellip;</div>
 
   <footer>
-    Red = working &middot; Orange = waiting on you &middot; Green = done<br>
+    Left lamp = working &middot; middle = waiting on you &middot;
+    right = done. (Some themes recolour the lamps; position is what
+    stays constant.)<br>
     Click a row for tokens and activity. For an always-on-top window that can
     also focus the right terminal, run
     <kbd>python run.py</kbd> on the host.
@@ -337,6 +357,64 @@
     .then(r => r.json())
     .then(d => { SOUNDS = d; fillSoundPicker(); })
     .catch(() => { /* chimes simply stay silent */ });
+
+  // --- themes, from the same definitions the desktop panel uses
+  let THEMES = null;
+  let theme = localStorage.getItem("clt.theme") || "midnight";
+
+  // theme token -> CSS custom property
+  const TOKEN_VARS = {
+    bg: "--bg", bg_hover: "--row-hover", border: "--border",
+    fg: "--fg", fg_dim: "--dim", fg_header: "--header",
+    detail_bg: "--row", settings_bg: "--settings-bg",
+    menu_bg: "--menu-bg", case_bg: "--case-bg", case_edge: "--case-edge",
+    bezel: "--bezel", lamp_off: "--lamp-off", lens: "--lens",
+    bar_bg: "--bar-bg",
+  };
+
+  function applyTheme(name) {
+    if (!THEMES || !THEMES.themes[name]) return;
+    const t = THEMES.themes[name];
+    const root = document.documentElement;
+    for (const [token, css] of Object.entries(TOKEN_VARS)) {
+      if (t[token]) root.style.setProperty(css, t[token]);
+    }
+    // The row surface sits between the page and the detail panel.
+    root.style.setProperty("--row", t.detail_bg);
+    root.style.setProperty("--case-bg-top", t.bezel);
+    root.style.setProperty("--off", t.lamp_off);
+    for (const lamp of ["red", "orange", "green"]) {
+      const pair = t.lights && t.lights[lamp];
+      if (!pair) continue;
+      root.style.setProperty("--" + lamp, pair[0]);
+      root.style.setProperty("--" + lamp + "-halo", pair[1]);
+    }
+    // A light theme needs a dark lens rim, or the highlight vanishes.
+    root.style.setProperty("--lens-edge",
+      t.dark ? "rgba(255,255,255,.28)" : "rgba(0,0,0,.30)");
+    root.style.setProperty("--lens-edge-bright",
+      t.dark ? "rgba(255,255,255,.5)" : "rgba(0,0,0,.45)");
+    root.style.colorScheme = t.dark ? "dark" : "light";
+  }
+
+  function fillThemePicker() {
+    if (!THEMES) return;
+    const sel = document.getElementById("setTheme");
+    sel.innerHTML = "";
+    for (const name of THEMES.order) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = THEMES.themes[name].label;
+      sel.appendChild(opt);
+    }
+    if (!THEMES.themes[theme]) theme = THEMES.order[0];
+    sel.value = theme;
+  }
+
+  fetch("themes.json")
+    .then(r => r.json())
+    .then(d => { THEMES = d; fillThemePicker(); applyTheme(theme); })
+    .catch(() => { /* the :root fallbacks stay in place */ });
 
   function strike(ctx, voice, spec, freq, at, gain) {
     for (const [ratio, amp, decayMult] of voice) {
@@ -653,6 +731,11 @@
     chime("green");
   });
   testEl.addEventListener("click", () => chime("green"));
+  document.getElementById("setTheme").addEventListener("change", ev => {
+    theme = ev.target.value;
+    remember("clt.theme", theme);
+    applyTheme(theme);
+  });
 
   // restore what this browser remembered
   const savedScale = Number(localStorage.getItem("clt.scale")) || 100;

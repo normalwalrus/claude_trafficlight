@@ -110,12 +110,19 @@ Host                                Docker
 | `Stop`             | green  | turn complete                              |
 | `SessionEnd`       | —      | row removed                                |
 
-A session is dropped when Claude Code stops listing it in
-`~/.claude/sessions/`, or after `STALE_SECONDS` (default 15 min) of silence if
-that registry cannot be read. Hook traffic alone is *not* used as a liveness
-signal: a session you leave open in your editor fires nothing at all between
-turns, and the timeout on its own would delete a row that is plainly still
-running.
+**Every running session is shown, and rows never time out.** Claude Code keeps
+a registry of live sessions in `~/.claude/sessions/`, which the container
+mounts, so the panel reads liveness rather than guessing it from hook traffic:
+
+* A session is **adopted** onto the panel as soon as Claude Code lists it, even
+  if it has never fired a hook — including after the container restarts. Its
+  token figures are read straight from its transcript.
+* A row stays for as long as the session exists, however long it sits idle.
+* A row disappears when the session does — you close the editor tab, or quit
+  Claude — and immediately on a clean exit via the `SessionEnd` hook.
+
+The `STALE_SECONDS` timeout survives only as the fallback for when that
+registry cannot be read at all.
 
 ## Using it
 
@@ -167,8 +174,32 @@ menu, and in the browser panel's header):
   runs roughly with the square root of amplitude - a linear slider would
   sound equally loud over most of its travel.
 * **Sound** — pick one of the six, with a test button.
+* **Theme** — six colour schemes, applied to both panels.
 
 <img src="docs/web-settings.png" width="620" alt="The same settings in the browser panel">
+
+### Themes
+
+| | |
+| --- | --- |
+| **Daylight** | **Neon** |
+| <img src="docs/theme-daylight.png" width="300"> | <img src="docs/theme-neon.png" width="300"> |
+| **Terminal** | **Colour-safe** |
+| <img src="docs/theme-terminal.png" width="300"> | <img src="docs/theme-coloursafe.png" width="300"> |
+
+Plus **Midnight** (the default, shown at the top) and **Sepia**.
+
+**Colour-safe** exists because red/green is the worst possible pairing for the
+commonest forms of colour blindness. It separates the lamps by hue *and*
+brightness — blue, amber, pale cyan — so they stay distinguishable under
+deuteranopia and protanopia. Lamp *position* never changes in any theme: left
+is working, middle is waiting on you, right is done.
+
+Themes are defined once in `panel/themes.py` and exported to
+`server/static/themes.json`, so both panels stay identical. The test suite
+checks every theme defines every colour, that text keeps enough contrast
+against its background, and that a lit lamp is always clearly brighter than an
+unlit one.
 
 The desktop panel stores these in `%APPDATA%\claude-trafficlight\panel.json`;
 the browser panel keeps its own in `localStorage`. Both read the same sound

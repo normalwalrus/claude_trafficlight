@@ -444,11 +444,15 @@ def test_the_detail_shows_context_and_token_figures():
 def test_the_detail_offers_focus_and_dismiss_buttons():
     p = panel()
     p.expanded.clear()
+    p.settings_open = False
     p.on_snapshot(snapshot([session(0, usage=USAGE)]))
-    eq(len(p.button_hitboxes), 0, "no buttons while collapsed")
+    eq(len([b for b in p.button_hitboxes if b[4] in ("dismiss", "focus")]), 0,
+       "no row buttons while collapsed")
 
     p.toggle_expanded(p.sessions[0])
-    actions = sorted(b[4] for b in p.button_hitboxes)
+    # Settings adds its own buttons; this is about the row's two.
+    actions = sorted(b[4] for b in p.button_hitboxes
+                     if b[4] in ("dismiss", "focus"))
     eq(actions, ["dismiss", "focus"], "both buttons present")
 
     for x0, y0, x1, y1, action, s in p.button_hitboxes:
@@ -467,7 +471,8 @@ def test_a_session_without_token_data_still_expands():
     p.toggle_expanded(p.sessions[0])
     body = " ".join(texts(p))
     ok("No token data" in body, "should explain the absence: %r" % body)
-    eq(len(p.button_hitboxes), 2, "buttons still available")
+    eq(len([b for b in p.button_hitboxes if b[4] in ("dismiss", "focus")]), 2,
+       "buttons still available")
     p.toggle_expanded(p.sessions[0])
 
 
@@ -628,10 +633,11 @@ def test_settings_shows_every_control():
     p.settings_open = True
     p.on_snapshot(snapshot([session(0)]))
     body = " ".join(texts(p))
-    for want in ("SETTINGS", "Size", "Volume", "Sound", "%"):
+    for want in ("SETTINGS", "Size", "Volume", "Sound", "Theme", "%"):
         ok(want in body, "missing control %r in %r" % (want, body))
     eq(sorted(b[4] for b in p.button_hitboxes),
-       ["sound_next", "sound_prev", "sound_test"], "sound controls")
+       ["sound_next", "sound_prev", "sound_test", "theme_next", "theme_prev"],
+       "sound and theme controls")
     eq(sorted(k for k, _a, _b, _c, _d in p.slider_hitboxes),
        ["scale", "volume"], "sliders")
     p.settings_open = False
@@ -738,3 +744,51 @@ def test_the_agent_badge_appears_on_the_collapsed_row():
     p.on_snapshot(snapshot([session(0, usage={"agents": 0, "context_limit": 200000})]))
     ok(not any("\u2699" in t and t != "\u2699" for t in texts(p)),
        "no badge when nothing is running: %r" % texts(p))
+
+
+def test_switching_theme_repaints_every_colour():
+    """A token the theme forgets would leave a widget in the previous theme's
+    colour, which only shows up after a switch."""
+    import themes as T
+    p = panel()
+    was = p.theme
+    try:
+        for name in T.ORDER:
+            p.apply_theme(name)
+            p.restyle()
+            p.on_snapshot(snapshot([session(0, state="red", usage=USAGE)]))
+            eq(p.BG, T.get(name)["bg"], "%s background" % name)
+            eq(p.LIGHTS["red"][0], T.get(name)["lights"]["red"][0],
+               "%s red lamp" % name)
+            eq(str(p.canvas["bg"]), T.get(name)["bg"], "%s canvas" % name)
+            ok(len(p.canvas.find_all()) > 5, "%s drew nothing" % name)
+    finally:
+        p.apply_theme(was)
+        p.restyle()
+
+
+def test_an_unknown_theme_in_the_config_falls_back():
+    import themes as T
+    p = panel()
+    was = p.theme
+    try:
+        p.apply_theme("no-such-theme")
+        eq(p.theme, T.DEFAULT, "should fall back to the default")
+        eq(p.BG, T.get(T.DEFAULT)["bg"])
+    finally:
+        p.apply_theme(was)
+
+
+def test_the_theme_choice_is_persisted():
+    import themes as T
+    p = panel()
+    was = p.theme
+    try:
+        p.apply_theme("midnight")
+        p.cycle_theme(1)
+        eq(p.theme, T.ORDER[1], "moved to the next theme")
+        eq(load_saved().get("theme"), p.theme, "written to the config")
+    finally:
+        p.apply_theme(was)
+        p.cfg["theme"] = was
+        P.save_config(p.cfg)

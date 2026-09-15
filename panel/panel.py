@@ -19,6 +19,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chime  # noqa: E402
+import themes  # noqa: E402
 from winutil import focus_session, window_title  # noqa: E402
 
 SERVER = os.environ.get("CLAUDE_LIGHT_URL", "http://127.0.0.1:8787").rstrip("/")
@@ -76,7 +77,7 @@ BANNER_SECS = 4.0
 BANNER_FADE = 0.35
 
 # Settings panel, at 100% scale.
-SETTINGS_H = 108
+SETTINGS_H = 134
 MIN_SCALE = 0.75
 MAX_SCALE = 1.50
 
@@ -202,6 +203,63 @@ class Feed(threading.Thread):
 
 
 class Panel:
+    # --- theme --------------------------------------------------------------
+
+    def apply_theme(self, name=None):
+        """Load a theme's colours onto the instance.
+
+        Colours live here rather than at module level for the same reason the
+        geometry does: so they can change while the panel is running.
+        """
+        if name is not None:
+            self.theme = name if name in themes.THEMES else themes.DEFAULT
+        t = themes.get(self.theme)
+        self.BG = t["bg"]
+        self.BG_HOVER = t["bg_hover"]
+        self.BORDER = t["border"]
+        self.FG = t["fg"]
+        self.FG_DIM = t["fg_dim"]
+        self.FG_HEADER = t["fg_header"]
+        self.DETAIL_BG = t["detail_bg"]
+        self.SETTINGS_BG = t["settings_bg"]
+        self.MENU_BG = t["menu_bg"]
+        self.MENU_ACTIVE = t["menu_active"]
+        self.CASE_BG = t["case_bg"]
+        self.CASE_EDGE = t["case_edge"]
+        self.BEZEL = t["bezel"]
+        self.LAMP_OFF = t["lamp_off"]
+        self.LENS = t["lens"]
+        self.LIGHTS = {k: tuple(v) for k, v in t["lights"].items()}
+        self.BAR_BG = t["bar_bg"]
+        self.BAR_OK = t["bar_ok"]
+        self.BAR_WARN = t["bar_warn"]
+        self.BAR_FULL = t["bar_full"]
+        self.BTN_BG = t["btn_bg"]
+        self.BTN_HOVER = t["btn_hover"]
+        self.SLIDER_TRACK = t["slider_track"]
+        self.SLIDER_KNOB = t["slider_knob"]
+        self.BADGE_BG = t["badge_bg"]
+        self.BADGE_FG = t["badge_fg"]
+
+    def restyle(self):
+        """Push the current theme into the widgets Tk owns."""
+        try:
+            self.root.configure(bg=self.BG)
+            self.canvas.configure(bg=self.BG)
+            self.menu.configure(bg=self.MENU_BG, fg=self.FG,
+                                activebackground=self.MENU_ACTIVE,
+                                activeforeground=self.FG)
+        except Exception:
+            pass
+
+    def cycle_theme(self, step):
+        idx = (themes.ORDER.index(self.theme) + step) % len(themes.ORDER)
+        self.apply_theme(themes.ORDER[idx])
+        self.cfg["theme"] = self.theme
+        save_config(self.cfg)
+        self.restyle()
+        self.draw()
+
     # --- scaling ------------------------------------------------------------
 
     def rescale(self):
@@ -264,6 +322,8 @@ class Panel:
         self.slider_hitboxes = []
         self._drag_slider = None
 
+        self.theme = themes.DEFAULT
+        self.apply_theme(str(self.cfg.get("theme", themes.DEFAULT)))
         self.scale = min(MAX_SCALE, max(MIN_SCALE,
                                         as_float(self.cfg.get("scale", 1.0), 1.0)))
         self.sound = str(self.cfg.get("sound", chime.DEFAULT))
@@ -274,7 +334,7 @@ class Panel:
         self.root = tk.Tk()
         self.root.title("Claude Traffic Light")
         self.root.overrideredirect(True)
-        self.root.configure(bg=BG)
+        self.root.configure(bg=self.BG)
         self.root.attributes("-topmost", bool(self.cfg.get("topmost", True)))
         self.alpha_idle = min(1.0, max(0.2, as_float(self.cfg.get("alpha", 0.93), 0.93)))
         self.root.attributes("-alpha", self.alpha_idle)
@@ -287,7 +347,7 @@ class Panel:
             self.root,
             width=self.W,
             height=self.HH + self.RH,
-            bg=BG,
+            bg=self.BG,
             highlightthickness=0,
             bd=0,
         )
@@ -296,10 +356,10 @@ class Panel:
         self.menu = tk.Menu(
             self.root,
             tearoff=0,
-            bg="#1c2029",
-            fg=FG,
-            activebackground="#2b3140",
-            activeforeground=FG,
+            bg=self.MENU_BG,
+            fg=self.FG,
+            activebackground=self.MENU_ACTIVE,
+            activeforeground=self.FG,
             bd=0,
             relief="flat",
         )
@@ -528,28 +588,28 @@ class Panel:
             body += self.SETTINGS_H
         h = self.resize(body)
 
-        c.create_rectangle(0, 0, self.W - 1, h - 1, fill=BG, outline=BORDER)
+        c.create_rectangle(0, 0, self.W - 1, h - 1, fill=self.BG, outline=self.BORDER)
 
-        dot = "#3ddc84" if self.connected else "#ff5964"
+        dot = self.BAR_OK if self.connected else self.BAR_FULL
         c.create_oval(10, self.HH // 2 - 3, 16, self.HH // 2 + 3, fill=dot, outline="")
         c.create_text(
             24,
             self.HH // 2,
             anchor="w",
             text="CLAUDE",
-            fill=FG_HEADER,
+            fill=self.FG_HEADER,
             font=self.f(8, "bold"),
         )
         n = len(self.sessions)
         status = str(n) + " session" + ("" if n == 1 else "s")
         if not self.connected:
             status = "server offline"
-        status_fill = FG_HEADER
+        status_fill = self.FG_HEADER
         if self._toast:
             text, expiry = self._toast
             if time.time() < expiry:
                 status = text
-                status_fill = "#ffb03a"
+                status_fill = self.BAR_WARN
             else:
                 self._toast = None
         c.create_text(
@@ -567,7 +627,7 @@ class Panel:
             self.HH // 2,
             anchor="center",
             text="×",
-            fill=FG_HEADER,
+            fill=self.FG_HEADER,
             font=self.f(11),
         )
         c.create_text(
@@ -575,10 +635,10 @@ class Panel:
             self.HH // 2,
             anchor="center",
             text="⚙",
-            fill=BAR_OK if self.settings_open else FG_HEADER,
+            fill=self.BAR_OK if self.settings_open else self.FG_HEADER,
             font=self.f(9),
         )
-        c.create_line(0, self.HH, self.W, self.HH, fill=BORDER)
+        c.create_line(0, self.HH, self.W, self.HH, fill=self.BORDER)
 
         self.row_hitboxes = []
 
@@ -592,7 +652,7 @@ class Panel:
                 self.W // 2,
                 self.HH + self.RH // 2,
                 text=msg,
-                fill=FG_DIM,
+                fill=self.FG_DIM,
                 font=self.f(8),
             )
             if self.settings_open:
@@ -612,7 +672,7 @@ class Panel:
                 self.W // 2,
                 y + self.RH // 2,
                 text="+" + str(hidden) + " more (no room on screen)",
-                fill=FG_DIM,
+                fill=self.FG_DIM,
                 font=self.f(8),
             )
             y += self.RH
@@ -628,7 +688,7 @@ class Panel:
 
         if self.hover_index == index:
             c.create_rectangle(1, top + 1, self.W - 2, top + self.RH - 1,
-                               fill=BG_HOVER, outline="")
+                               fill=self.BG_HOVER, outline="")
 
         self.draw_signal(cy, sid, state)
 
@@ -655,7 +715,7 @@ class Panel:
                 label = label + "  · " + detail
 
         label_id = c.create_text(self.TX, cy, anchor="w", text=label,
-                                 fill=mix(FG, BG, fade), font=self.f(9))
+                                 fill=mix(self.FG, self.BG, fade), font=self.f(9))
 
         # Subagents run inside their parent session and never get a row of
         # their own, so without this there is no sign from the collapsed row
@@ -670,21 +730,21 @@ class Panel:
                 c.create_polygon(
                     round_rect(x0, cy - h // 2, x0 + w, cy + h // 2,
                                max(3, int(4 * self.scale))),
-                    smooth=True, fill="#3a2f14", outline="",
+                    smooth=True, fill=self.BADGE_BG, outline="",
                 )
                 c.create_text(x0 + w // 2, cy, anchor="center",
                               text="⚙" + str(agents),
-                              fill=BAR_WARN, font=self.f(7))
+                              fill=self.BADGE_FG, font=self.f(7))
         c.create_text(
             self.W - 26, cy, anchor="e", text=stamp,
-            fill=mix(FG_DIM, BG, fade), font=self.fm(8)
+            fill=mix(self.FG_DIM, self.BG, fade), font=self.fm(8)
         )
         c.create_text(
             self.W - 13,
             cy,
             anchor="center",
             text="▾" if expanded else "▸",
-            fill=mix(FG_HEADER, BG, fade),
+            fill=mix(self.FG_HEADER, self.BG, fade),
             font=self.f(7),
         )
 
@@ -732,28 +792,28 @@ class Panel:
 
         c.create_polygon(
             round_rect(self.CX0, cy - self.CH // 2, self.CX1, cy + self.CH // 2, 6),
-            smooth=True, fill=CASE_BG, outline=CASE_EDGE,
+            smooth=True, fill=self.CASE_BG, outline=self.CASE_EDGE,
         )
 
         for j, name in enumerate(ORDER):
             cx = self.LX0 + j * self.LG
             level = levels.get(name, 0.0)
-            on, glow = LIGHTS[name]
+            on, glow = self.LIGHTS[name]
 
             if level > 0.01:
                 halo = self.LR + 3 + pulse * 3.0
                 c.create_oval(cx - halo, cy - halo, cx + halo, cy + halo,
-                              fill=mix(CASE_BG, glow, level), outline="")
+                              fill=mix(self.CASE_BG, glow, level), outline="")
 
             c.create_oval(cx - self.LR - 1, cy - self.LR - 1,
                           cx + self.LR + 1, cy + self.LR + 1,
-                          fill=BEZEL, outline="")
+                          fill=self.BEZEL, outline="")
             c.create_oval(cx - self.LR, cy - self.LR, cx + self.LR, cy + self.LR,
-                          fill=mix(LAMP_OFF, on, level), outline="")
+                          fill=mix(self.LAMP_OFF, on, level), outline="")
             if level > 0.5:
                 # A small off-centre highlight reads as a glass lens.
                 c.create_oval(cx - 2, cy - self.LR + 1, cx, cy - self.LR + 3,
-                              fill=mix(on, "#ffffff", 0.45 * level), outline="")
+                              fill=mix(on, self.LENS, 0.45 * level), outline="")
 
     # --- settings -----------------------------------------------------------
 
@@ -762,10 +822,10 @@ class Panel:
         c = self.canvas
         s = self.scale
         c.create_rectangle(1, top, self.W - 2, top + self.SETTINGS_H,
-                           fill="#101318", outline="")
-        c.create_line(8, top, self.W - 8, top, fill=BORDER)
+                           fill=self.SETTINGS_BG, outline="")
+        c.create_line(8, top, self.W - 8, top, fill=self.BORDER)
         c.create_text(int(12 * s), top + int(13 * s), anchor="w", text="SETTINGS",
-                      fill=FG_HEADER, font=self.f(7, "bold"))
+                      fill=self.FG_HEADER, font=self.f(7, "bold"))
 
         label_x = int(12 * s)
         track_x0 = int(64 * s)
@@ -783,29 +843,42 @@ class Panel:
                          "muted" if self.volume <= 0 else "%d%%" % self.volume)
 
         y += int(26 * s)
-        c.create_text(label_x, y, anchor="w", text="Sound",
-                      fill=FG_DIM, font=self.f(8))
-        self.draw_button(track_x0, y - int(9 * s), int(14 * s), "◂",
-                         "sound_prev", None, h=int(18 * s))
-        c.create_text((track_x0 + track_x1) // 2, y, anchor="center",
-                      text=chime.label(self.sound), fill=FG, font=self.f(8))
-        self.draw_button(track_x1 - int(14 * s), y - int(9 * s), int(14 * s),
-                         "▸", "sound_next", None, h=int(18 * s))
+        self.draw_picker(label_x, track_x0, track_x1, y, "Sound",
+                         chime.label(self.sound), "sound")
         self.draw_button(value_x - int(44 * s), y - int(9 * s), int(44 * s),
                          "▷ test", "sound_test", None, h=int(18 * s))
+
+        y += int(24 * s)
+        self.draw_picker(label_x, track_x0, track_x1, y, "Theme",
+                         themes.label(self.theme), "theme")
+
+    def draw_picker(self, label_x, x0, x1, y, label, value, action):
+        """A left/right chooser, shared by the sound and theme rows."""
+        c = self.canvas
+        s = self.scale
+        arrow = int(14 * s)
+        c.create_text(label_x, y, anchor="w", text=label, fill=self.FG_DIM,
+                      font=self.f(8))
+        self.draw_button(x0, y - int(9 * s), arrow, "◂",
+                         action + "_prev", None, h=int(18 * s))
+        c.create_text((x0 + x1) // 2, y, anchor="center", text=value,
+                      fill=self.FG, font=self.f(8))
+        self.draw_button(x1 - arrow, y - int(9 * s), arrow, "▸",
+                         action + "_next", None, h=int(18 * s))
 
     def draw_slider(self, key, label_x, x0, x1, value_x, y, label, frac, text):
         c = self.canvas
         s = self.scale
-        c.create_text(label_x, y, anchor="w", text=label, fill=FG_DIM,
+        c.create_text(label_x, y, anchor="w", text=label, fill=self.FG_DIM,
                       font=self.f(8))
-        c.create_line(x0, y, x1, y, fill="#2a3039", width=max(2, int(3 * s)))
+        c.create_line(x0, y, x1, y, fill=self.SLIDER_TRACK, width=max(2, int(3 * s)))
         hx = x0 + (x1 - x0) * max(0.0, min(1.0, frac))
-        filled = mix("#2a3039", BAR_OK, 0.85)
+        filled = mix(self.SLIDER_TRACK, self.BAR_OK, 0.85)
         c.create_line(x0, y, hx, y, fill=filled, width=max(2, int(3 * s)))
         r = max(4, int(5 * s))
-        c.create_oval(hx - r, y - r, hx + r, y + r, fill="#e6e9ef", outline="")
-        c.create_text(value_x, y, anchor="e", text=text, fill=FG,
+        c.create_oval(hx - r, y - r, hx + r, y + r,
+                      fill=self.SLIDER_KNOB, outline="")
+        c.create_text(value_x, y, anchor="e", text=text, fill=self.FG,
                       font=self.f(8))
         # A generous vertical band: a 3px line is far too thin to hit.
         self.slider_hitboxes.append((key, x0, x1, y - int(10 * s), y + int(10 * s)))
@@ -868,14 +941,14 @@ class Panel:
         nothing shifts under the cursor while you are reading it."""
         c = self.canvas
         text, state, alpha = banner
-        on, glow = LIGHTS.get(state, LIGHTS["green"])
+        on, glow = self.LIGHTS.get(state, self.LIGHTS["green"])
         c.create_rectangle(
             self.TX - 6, top + 4, self.W - 6, top + self.RH - 4,
-            fill=mix(BG, glow, 0.85 * alpha), outline="",
+            fill=mix(self.BG, glow, 0.85 * alpha), outline="",
         )
         c.create_text(
             self.TX + 2, top + self.RH // 2, anchor="w",
-            text=text, fill=mix(BG, on, alpha), font=self.f(8, "bold"),
+            text=text, fill=mix(self.BG, on, alpha), font=self.f(8, "bold"),
         )
 
     # --- expanded detail ----------------------------------------------------
@@ -889,9 +962,9 @@ class Panel:
             usage = {}
 
         c.create_rectangle(
-            1, top, self.W - 2, top + self.DH, fill="#111318", outline=""
+            1, top, self.W - 2, top + self.DH, fill=self.DETAIL_BG, outline=""
         )
-        c.create_line(12, top, self.W - 12, top, fill=BORDER)
+        c.create_line(12, top, self.W - 12, top, fill=self.BORDER)
 
         y = top + 13
         state = s.get("state", "green")
@@ -906,7 +979,7 @@ class Panel:
         else:
             activity = "Idle"
         c.create_text(
-            14, y, anchor="w", text=activity[:34], fill=FG, font=self.f(8)
+            14, y, anchor="w", text=activity[:34], fill=self.FG, font=self.f(8)
         )
         agents = as_int(usage.get("agents"))
         if agents:
@@ -915,7 +988,7 @@ class Panel:
                 y,
                 anchor="e",
                 text=str(agents) + " agent" + ("" if agents == 1 else "s"),
-                fill=BAR_WARN,
+                fill=self.BAR_WARN,
                 font=self.f(8),
             )
 
@@ -929,7 +1002,7 @@ class Panel:
                 y,
                 anchor="w",
                 text="Context  " + fmt_tokens(used) + " / " + fmt_tokens(limit),
-                fill=FG_DIM,
+                fill=self.FG_DIM,
                 font=self.f(8),
             )
             c.create_text(
@@ -937,14 +1010,14 @@ class Panel:
                 y,
                 anchor="e",
                 text="{:.0f}%".format(frac * 100),
-                fill=FG_DIM,
+                fill=self.FG_DIM,
                 font=self.f(8),
             )
             y += 14
             bar_w = self.W - 28
-            colour = BAR_OK if frac < 0.75 else (BAR_WARN if frac < 0.9 else BAR_FULL)
+            colour = self.BAR_OK if frac < 0.75 else (self.BAR_WARN if frac < 0.9 else self.BAR_FULL)
             c.create_rectangle(
-                14, y, 14 + bar_w, y + 5, fill=BAR_BG, outline=""
+                14, y, 14 + bar_w, y + 5, fill=self.BAR_BG, outline=""
             )
             if frac > 0:
                 c.create_rectangle(
@@ -963,7 +1036,7 @@ class Panel:
                     + as_int(usage.get("tokens_cache_write"))
                 )
                 + "   Cached " + fmt_tokens(usage.get("tokens_cache_read")),
-                fill=FG_DIM,
+                fill=self.FG_DIM,
                 font=self.f(8),
             )
             y += 16
@@ -975,7 +1048,7 @@ class Panel:
                 bits.append(str(turns) + " turns")
             line = "  ·  ".join(b for b in bits if b)
             c.create_text(
-                14, y, anchor="w", text=line[:44], fill=FG_HEADER,
+                14, y, anchor="w", text=line[:44], fill=self.FG_HEADER,
                 font=self.f(8),
             )
         else:
@@ -985,13 +1058,13 @@ class Panel:
                 y,
                 anchor="w",
                 text="No token data - restart this Claude session",
-                fill=FG_HEADER,
+                fill=self.FG_HEADER,
                 font=self.f(8),
             )
             y += 16
             cwd = str(s.get("cwd") or "")
             c.create_text(
-                14, y, anchor="w", text=cwd[-44:], fill=FG_HEADER,
+                14, y, anchor="w", text=cwd[-44:], fill=self.FG_HEADER,
                 font=self.f(8),
             )
 
@@ -1007,12 +1080,12 @@ class Panel:
         hot = self._hover_button == (action, sid)
         c.create_rectangle(
             x, y, x + w, y + h,
-            fill=BTN_HOVER if hot else BTN_BG,
-            outline=BORDER,
+            fill=self.BTN_HOVER if hot else self.BTN_BG,
+            outline=self.BORDER,
         )
         c.create_text(
             x + w // 2, y + h // 2, text=label,
-            fill=FG if hot else FG_DIM, font=self.f(8),
+            fill=self.FG if hot else self.FG_DIM, font=self.f(8),
         )
         self.button_hitboxes.append((x, y, x + w, y + h, action, s))
 
@@ -1085,6 +1158,10 @@ class Panel:
                 self.cycle_sound(-1)
             elif action == "sound_next":
                 self.cycle_sound(1)
+            elif action == "theme_prev":
+                self.cycle_theme(-1)
+            elif action == "theme_next":
+                self.cycle_theme(1)
             elif action == "sound_test":
                 chime.play("green", self.volume, self.sound)
             elif action == "focus":

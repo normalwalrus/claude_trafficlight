@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness  # noqa: E402
 
 MODULES = ["server", "hook", "transcript", "chime", "winutil", "desktop",
-           "panel", "focus", "install_hooks", "bootstrap"]
+           "themes", "panel", "focus", "install_hooks", "bootstrap"]
 
 
 def main(argv):
