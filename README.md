@@ -127,6 +127,40 @@ python install.py --remove # undo everything
 
 Both panels show the same data and can run at the same time.
 
+## Settings
+
+<img src="docs/panel-settings.png" width="420" alt="Settings: size, volume and sound">
+
+The ⚙ in the header opens an inline settings panel (also in the right-click
+menu, and in the browser panel's header):
+
+* **Size** — scales the whole panel from 75% to 150%; width, rows, lamps and
+  fonts all grow together.
+* **Volume** — a 0-100 slider; 0 is silent and plays nothing at all.
+  The curve is squared rather than linear, because perceived loudness
+  runs roughly with the square root of amplitude - a linear slider would
+  sound equally loud over most of its travel.
+* **Sound** — pick one of the six, with a test button.
+* **Theme** — six colour schemes.
+
+**Sound, volume and theme are one setting, not one per panel.** Both panels
+chime at the same events, so a choice kept in one of them meant picking a sound
+in the browser and still hearing the desktop panel's old one. The server holds
+them (`GET`/`PUT /settings`), every snapshot carries them, and whichever panel
+you change follows in the other within a second. They are stored in
+`~/.claude/claude-trafficlight/panel-settings.json`, so they survive rebuilding
+or deleting the container, and each panel keeps a local copy so it still looks
+right before the first snapshot arrives.
+
+The first panel to connect to a server that has never been told anything sends
+up the choice it already had, so nothing resets you to the defaults.
+
+Size and position stay per panel - they are about the window, not about you -
+as does the browser's own **Sound on/off** button, which is a permission the
+browser grants on a click rather than a preference.
+
+<img src="docs/web-settings.png" width="620" alt="The same settings in the browser panel">
+
 ## What each setup gets you
 
 | Host has                | You get                                            |
@@ -375,40 +409,6 @@ Each has a *done* variant that rings on and a shorter *needs-you* variant, so
 the two are never confused. What separates them is mostly the partial set: a
 struck bar rings at ~1 : 2.76 : 5.40 : 8.93 with the upper modes dying first,
 a marimba bar at 1 : 4 : 10, and a beep is a plain harmonic stack held flat.
-
-### Settings
-
-<img src="docs/panel-settings.png" width="420" alt="Settings: size, volume and sound">
-
-The ⚙ in the header opens an inline settings panel (also in the right-click
-menu, and in the browser panel's header):
-
-* **Size** — scales the whole panel from 75% to 150%; width, rows, lamps and
-  fonts all grow together.
-* **Volume** — a 0-100 slider; 0 is silent and plays nothing at all.
-  The curve is squared rather than linear, because perceived loudness
-  runs roughly with the square root of amplitude - a linear slider would
-  sound equally loud over most of its travel.
-* **Sound** — pick one of the six, with a test button.
-* **Theme** — six colour schemes.
-
-**Sound, volume and theme are one setting, not one per panel.** Both panels
-chime at the same events, so a choice kept in one of them meant picking a sound
-in the browser and still hearing the desktop panel's old one. The server holds
-them (`GET`/`PUT /settings`), every snapshot carries them, and whichever panel
-you change follows in the other within a second. They are stored in
-`~/.claude/claude-trafficlight/panel-settings.json`, so they survive rebuilding
-or deleting the container, and each panel keeps a local copy so it still looks
-right before the first snapshot arrives.
-
-The first panel to connect to a server that has never been told anything sends
-up the choice it already had, so nothing resets you to the defaults.
-
-Size and position stay per panel - they are about the window, not about you -
-as does the browser's own **Sound on/off** button, which is a permission the
-browser grants on a click rather than a preference.
-
-<img src="docs/web-settings.png" width="620" alt="The same settings in the browser panel">
 
 ### Themes
 
