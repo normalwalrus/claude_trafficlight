@@ -817,13 +817,16 @@ def test_cycling_sounds_wraps_and_persists():
 def test_the_agent_badge_appears_on_the_collapsed_row():
     """Subagents never get their own row, so this is the only sign from the
     collapsed view that a session has agents under it."""
+    # The gear is a drawn shape now, not a \u2699 glyph (Tk does no per-glyph
+    # fallback and the panel's Tk may have no font carrying it), so the count
+    # beside it is what the badge exposes as text.
     p = panel()
     p.on_snapshot(snapshot([session(0, usage={"agents": 3, "context_limit": 200000})]))
-    ok(any("\u2699" in t and "3" in t for t in texts(p)),
-       "expected an agent badge: %r" % texts(p))
+    ok("3" in texts(p),
+       "expected an agent badge showing the count: %r" % texts(p))
 
     p.on_snapshot(snapshot([session(0, usage={"agents": 0, "context_limit": 200000})]))
-    ok(not any("\u2699" in t and t != "\u2699" for t in texts(p)),
+    ok("3" not in texts(p),
        "no badge when nothing is running: %r" % texts(p))
 
 

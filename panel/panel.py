@@ -1017,22 +1017,11 @@ class Panel:
         )
         # Explicit quit affordance: an overrideredirect window has no title bar
         # and no taskbar entry, so never rely on the context menu alone.
-        c.create_text(
-            self.W - int(13 * self.scale),
-            self.HH // 2,
-            anchor="center",
-            text="×",
-            fill=self.FG_HEADER,
-            font=self.f(11),
-        )
-        c.create_text(
-            self.W - int(30 * self.scale),
-            self.HH // 2,
-            anchor="center",
-            text="⚙",
-            fill=self.BAR_OK if self.settings_open else self.FG_HEADER,
-            font=self.f(9),
-        )
+        self._icon_close(self.W - int(13 * self.scale), self.HH // 2,
+                         max(4, int(round(4.5 * self.scale))), self.FG_HEADER)
+        self._icon_gear(self.W - int(30 * self.scale), self.HH // 2,
+                        max(5, int(round(6 * self.scale))),
+                        self.BAR_OK if self.settings_open else self.FG_HEADER)
         c.create_line(0, self.HH, self.W, self.HH, fill=self.BORDER)
 
         self.row_hitboxes = []
@@ -1151,20 +1140,20 @@ class Panel:
                                max(3, int(4 * self.scale))),
                     smooth=True, fill=self.BADGE_BG, outline="",
                 )
-                c.create_text(x0 + w // 2, cy, anchor="center",
-                              text="⚙" + str(agents),
+                gr = max(2, int(round(3 * self.scale)))
+                self._icon_gear(x0 + int(7 * self.scale), cy, gr,
+                                self.BADGE_FG, bg=self.BADGE_BG)
+                c.create_text(x0 + int(7 * self.scale) + gr + int(2 * self.scale),
+                              cy, anchor="w", text=str(agents),
                               fill=self.BADGE_FG, font=self.f(7))
         c.create_text(
             self.W - int(26 * self.scale), cy, anchor="e", text=stamp,
             fill=mix(self.FG_DIM, self.BG, fade), font=self.fm(8)
         )
-        c.create_text(
-            self.W - int(13 * self.scale),
-            cy,
-            anchor="center",
-            text="▾" if expanded else "▸",
-            fill=mix(self.FG_HEADER, self.BG, fade),
-            font=self.f(7),
+        self._icon_tri(
+            self.W - int(13 * self.scale), cy, max(3, int(4 * self.scale)),
+            mix(self.FG_HEADER, self.BG, fade),
+            "down" if expanded else "right",
         )
 
         if banner:
@@ -1265,7 +1254,7 @@ class Panel:
         self.draw_picker(label_x, track_x0, track_x1, y, "Sound",
                          chime.label(self.sound), "sound")
         self.draw_button(value_x - int(44 * s), y - int(9 * s), int(44 * s),
-                         "▷ test", "sound_test", None, h=int(18 * s))
+                         "test", "sound_test", None, h=int(18 * s), icon="right")
 
         y += int(24 * s)
         self.draw_picker(label_x, track_x0, track_x1, y, "Theme",
@@ -1278,12 +1267,12 @@ class Panel:
         arrow = int(14 * s)
         c.create_text(label_x, y, anchor="w", text=label, fill=self.FG_DIM,
                       font=self.f(8))
-        self.draw_button(x0, y - int(9 * s), arrow, "◂",
-                         action + "_prev", None, h=int(18 * s))
+        self.draw_button(x0, y - int(9 * s), arrow, "",
+                         action + "_prev", None, h=int(18 * s), icon="left")
         c.create_text((x0 + x1) // 2, y, anchor="center", text=value,
                       fill=self.FG, font=self.f(8))
-        self.draw_button(x1 - arrow, y - int(9 * s), arrow, "▸",
-                         action + "_next", None, h=int(18 * s))
+        self.draw_button(x1 - arrow, y - int(9 * s), arrow, "",
+                         action + "_next", None, h=int(18 * s), icon="right")
 
     def draw_slider(self, key, label_x, x0, x1, value_x, y, label, frac, text):
         c = self.canvas
@@ -1615,7 +1604,55 @@ class Panel:
         self.draw_button(pad, top + height - int(26 * sc),
                          width, "Focus window", "focus", s)
 
-    def draw_button(self, x, y, w, label, action, s, h=None):
+    # --- vector icons -------------------------------------------------------
+    #
+    # The gear, the arrows and the close cross are drawn as canvas shapes, not
+    # font glyphs. Tk does no per-glyph fallback, and the panel's Tk may have no
+    # scalable font at all - conda's Tk is built without Xft, so on Linux it is
+    # left with X11 bitmap fonts that carry none of ⚙ ▸ ▾ ◂ × and rendered them
+    # blank or as a box. A shape always draws, and looks the same on every OS.
+
+    def _icon_gear(self, cx, cy, r, colour, bg=None, teeth=8):
+        """A settings cog: a toothed disc with a punched-out hub."""
+        c = self.canvas
+        r_out = float(r)
+        r_in = r * 0.70
+        hub = max(1.0, r * 0.34)
+        tw = 2 * math.pi / teeth
+        pts = []
+        for i in range(teeth):
+            a = i * tw
+            for frac, rr in ((0.00, r_in), (0.12, r_out), (0.38, r_out), (0.50, r_in)):
+                ang = a + frac * tw
+                pts += [cx + rr * math.cos(ang), cy + rr * math.sin(ang)]
+        c.create_polygon(pts, fill=colour, outline="", joinstyle="round")
+        c.create_oval(cx - hub, cy - hub, cx + hub, cy + hub,
+                      fill=bg or self.BG, outline="")
+
+    def _icon_close(self, cx, cy, r, colour):
+        c = self.canvas
+        w = max(1, int(round(r * 0.34)))
+        c.create_line(cx - r, cy - r, cx + r, cy + r,
+                      fill=colour, width=w, capstyle="round")
+        c.create_line(cx - r, cy + r, cx + r, cy - r,
+                      fill=colour, width=w, capstyle="round")
+
+    def _icon_tri(self, cx, cy, r, colour, direction="right", fill=True):
+        """A little triangle: row disclosure, the sound/theme pickers, ▷ test."""
+        if direction == "left":
+            p = [cx + r * 0.7, cy - r, cx - r * 0.9, cy, cx + r * 0.7, cy + r]
+        elif direction == "down":
+            p = [cx - r, cy - r * 0.7, cx + r, cy - r * 0.7, cx, cy + r * 0.9]
+        else:  # right
+            p = [cx - r * 0.7, cy - r, cx + r * 0.9, cy, cx - r * 0.7, cy + r]
+        if fill:
+            self.canvas.create_polygon(p, fill=colour, outline="")
+        else:
+            self.canvas.create_polygon(p, fill="", outline=colour,
+                                       width=max(1, int(round(r * 0.30))),
+                                       joinstyle="round")
+
+    def draw_button(self, x, y, w, label, action, s, h=None, icon=None):
         c = self.canvas
         h = h or max(14, int(18 * self.scale))
         sid = s.get("session_id") if isinstance(s, dict) else None
@@ -1625,10 +1662,20 @@ class Panel:
             fill=self.BTN_HOVER if hot else self.BTN_BG,
             outline=self.BORDER,
         )
-        c.create_text(
-            x + w // 2, y + h // 2, text=label,
-            fill=self.FG if hot else self.FG_DIM, font=self.f(8),
-        )
+        colour = self.FG if hot else self.FG_DIM
+        cy = y + h // 2
+        if icon and not label:
+            # An icon-only button: the sound/theme picker arrows.
+            self._icon_tri(x + w // 2, cy, max(3, int(4 * self.scale)),
+                           colour, icon)
+        elif icon:
+            # Icon then label, side by side: the "▷ test" button.
+            r = max(3, int(4 * self.scale))
+            self._icon_tri(x + int(11 * self.scale), cy, r, colour, icon)
+            c.create_text(x + int(11 * self.scale) + r + int(4 * self.scale), cy,
+                          anchor="w", text=label, fill=colour, font=self.f(8))
+        else:
+            c.create_text(x + w // 2, cy, text=label, fill=colour, font=self.f(8))
         self.button_hitboxes.append((x, y, x + w, y + h, action, s))
 
     # --- interaction --------------------------------------------------------
