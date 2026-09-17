@@ -130,6 +130,32 @@ BAR_FULL = "#ff5964"
 BTN_BG = "#232833"
 BTN_HOVER = "#2e3543"
 
+# Fonts, in order of preference. Tk has no CSS-style fallback list: it takes a
+# single family, and a name it does not have drops to a bitmap default (X11
+# "fixed"/"gothic") rather than the nearest match - which is why hard-coding
+# Segoe UI / Consolas looked right only on Windows. It also does no per-glyph
+# fallback, so the family we pick has to carry every glyph the panel draws: the
+# gear (⚙), the triangle arrows (▸ ▾ ◂ ▷), ×, ·, … and the curly quotes.
+#
+# The list is walked once at startup and the first family the machine actually
+# has wins, so one ordered list covers every platform: Segoe UI on Windows, the
+# system faces on macOS, and DejaVu on Linux. DejaVu leads the Linux choices on
+# purpose - it is the fontconfig default and the one common Linux sans that has
+# all of those glyphs. Liberation Sans, though it looks most like Windows Arial,
+# is missing the gear and every triangle, so it is only a late fallback.
+UI_FONT_CANDIDATES = (
+    "Segoe UI",                          # Windows
+    "SF Pro Text", "Helvetica Neue",     # macOS
+    "DejaVu Sans", "Noto Sans", "FreeSans", "Cantarell", "Ubuntu",  # Linux
+    "Liberation Sans", "Arial", "Helvetica",
+)
+MONO_FONT_CANDIDATES = (
+    "Consolas",                          # Windows
+    "SF Mono", "Menlo", "Monaco",        # macOS
+    "DejaVu Sans Mono", "Noto Sans Mono", "Ubuntu Mono", "FreeMono",  # Linux
+    "Liberation Mono", "Courier New",
+)
+
 
 def mix(colour_a, colour_b, t):
     """Blend two #rrggbb colours. Tk canvas items have no alpha channel, so
@@ -446,13 +472,50 @@ class Panel:
         self.MV = int(MIN_VISIBLE * s)
         self.SETTINGS_H = int(SETTINGS_H * s)
 
+    def _pick_family(self, candidates, default_font):
+        """The first of `candidates` this machine actually has, else Tk's own
+        default for that role.
+
+        Two ways a family can count as present: it is in Tk's family list, or -
+        because some X builds under-report what Xft can still resolve - Tk says
+        it is what it *would actually use* when asked for it. Falling back to the
+        real family behind TkDefaultFont/TkFixedFont matters: a name Tk does not
+        have drops to a bitmap font, so a bogus "Segoe UI" on Linux looks far
+        worse than Tk's own default sans.
+        """
+        from tkinter import font as tkfont
+        try:
+            have = {name.lower() for name in tkfont.families(self.root)}
+        except Exception:
+            have = set()
+        for name in candidates:
+            low = name.lower()
+            if low in have:
+                return name
+            try:
+                actual = tkfont.Font(
+                    root=self.root, family=name, size=10).actual("family")
+            except Exception:
+                continue
+            if actual and actual.lower() == low:
+                return name
+        try:
+            return tkfont.nametofont(default_font).actual("family")
+        except Exception:
+            return candidates[0]
+
+    def resolve_fonts(self):
+        """Choose the UI and monospace families once, after the root exists."""
+        self.ui_family = self._pick_family(UI_FONT_CANDIDATES, "TkDefaultFont")
+        self.mono_family = self._pick_family(MONO_FONT_CANDIDATES, "TkFixedFont")
+
     def f(self, size, style=None):
         """A scaled UI font. Tk needs a real point size, so this rounds."""
         pt = max(6, int(round(size * self.scale)))
-        return ("Segoe UI", pt) if style is None else ("Segoe UI", pt, style)
+        return (self.ui_family, pt) if style is None else (self.ui_family, pt, style)
 
     def fm(self, size):
-        return ("Consolas", max(6, int(round(size * self.scale))))
+        return (self.mono_family, max(6, int(round(size * self.scale))))
 
     def set_scale(self, value):
         self.scale = min(MAX_SCALE, max(MIN_SCALE, value))
@@ -489,6 +552,10 @@ class Panel:
         self.settings_open = False
         self.slider_hitboxes = []
         self._drag_slider = None
+        # Real families are chosen once the Tk root exists (resolve_fonts); these
+        # are only a safe default in case f()/fm() run before that.
+        self.ui_family = UI_FONT_CANDIDATES[0]
+        self.mono_family = MONO_FONT_CANDIDATES[0]
 
         self.theme = themes.DEFAULT
         self.apply_theme(str(self.cfg.get("theme", themes.DEFAULT)))
@@ -504,6 +571,7 @@ class Panel:
         self.rescale()
 
         self.root = tk.Tk()
+        self.resolve_fonts()
         self.root.title("Claude Traffic Light")
         self.root.overrideredirect(True)
         self.root.configure(bg=self.BG)
